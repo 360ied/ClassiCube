@@ -77,6 +77,14 @@
               liberation_ttf
             ];
 
+            preBuild = ''
+              cd src
+            '';
+
+            postBuild = ''
+              cd ..
+            '';
+
             installPhase = ''
               runHook preInstall
 
