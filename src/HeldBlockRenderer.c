@@ -33,33 +33,8 @@ static void SetHeldModel(struct Model* model) {
 }
 
 static void HeldBlockRenderer_RenderModel(void) {
-	struct Model* model;
-
-	Gfx_SetFaceCulling(true);
-	Gfx_SetDepthTest(false);
-	/* Gfx_SetDepthWrite(false); */
-	/* TODO: Need to properly reallocate per model VB here */
-
-	if (Blocks.Draw[held_block] == DRAW_GAS) {
-		model = Entities.CurPlayer->Base.Model;
-		SetHeldModel(model);
-		Vec3_Set(held_entity.ModelScale, 1.0f,1.0f,1.0f);
-
-		Model_RenderArm(model, &held_entity);
-		Gfx_SetAlphaTest(false);
-	} else {	
-		model = Models.Block;
-		SetHeldModel(model);
-		Vec3_Set(held_entity.ModelScale, 0.4f,0.4f,0.4f);
-
-		Gfx_SetupAlphaState(Blocks.Draw[held_block]);
-		Model_Render(model, &held_entity);
-		Gfx_RestoreAlphaState(Blocks.Draw[held_block]);
-	}
-	
-	Gfx_SetDepthTest(true);
-	/* Gfx_SetDepthWrite(true); */
-	Gfx_SetFaceCulling(false);
+	// do nothing
+	return;
 }
 
 static void SetMatrix(void) {
