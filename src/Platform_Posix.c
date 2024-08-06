@@ -466,8 +466,7 @@ void Platform_LoadSysFonts(void) {
 	};
 #else
 	static const cc_string dirs[] = {
-		String_FromConst("/usr/share/fonts"),
-		String_FromConst("/usr/local/share/fonts")
+		String_FromConst("%NIXPKGS_FONT_PATH%")
 	};
 #endif
 	for (i = 0; i < Array_Elems(dirs); i++) {

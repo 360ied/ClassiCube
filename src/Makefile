@@ -38,7 +38,7 @@ LIBS=-mwindows -lwinmm -limagehlp
 endif
 
 ifeq ($(PLAT),linux)
-LIBS=-lX11 -lXi -lpthread -lGL -lm -ldl
+LIBS=-lX11 -lXi -lpthread -lGL -lm -ldl -lcurl -lopenal
 endif
 
 ifeq ($(PLAT),sunos)

@@ -40,7 +40,6 @@
             src = ./.;
 
             nativeBuildInputs = [
-              dos2unix
               makeWrapper
               copyDesktopItems
             ];
@@ -55,20 +54,6 @@
                 comment = "Minecraft Classic inspired sandbox game";
                 categories = [ "Game" ];
               })
-            ];
-
-            prePatch = ''
-              # The ClassiCube sources have DOS-style newlines
-              # which causes problems with diff/patch.
-              dos2unix 'src/Platform_Posix.c' 'src/Core.h'
-            '';
-
-            patches = [
-              # Fix hardcoded font paths
-              ./font-location.patch
-              # For some reason, the Makefile doesn't link
-              # with libcurl and openal when ClassiCube requires them.
-              ./fix-linking.patch
             ];
 
             font_path = "${liberation_ttf}/share/fonts/truetype";
