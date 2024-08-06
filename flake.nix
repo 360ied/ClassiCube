@@ -83,6 +83,7 @@
 
             postBuild = ''
               cd ..
+              mv src/ClassiCube .
             '';
 
             installPhase = ''
