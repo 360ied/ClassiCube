@@ -68,7 +68,7 @@
                 --replace '%NIXPKGS_FONT_PATH%' "${font_path}"
               # ClassiCube's Makefile hardcodes JOBS=1 for some reason,
               # even though it works perfectly well multi-threaded.
-              substituteInPlace Makefile \
+              substituteInPlace src/Makefile \
                 --replace 'JOBS=1' "JOBS=$NIX_BUILD_CORES"
             '';
 
