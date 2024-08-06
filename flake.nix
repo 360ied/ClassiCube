@@ -77,15 +77,6 @@
               liberation_ttf
             ];
 
-            preBuild = ''
-              cd src
-            '';
-
-            postBuild = ''
-              cd ..
-              mv src/ClassiCube .
-            '';
-
             installPhase = ''
               runHook preInstall
 
