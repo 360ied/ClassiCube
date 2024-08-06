@@ -5,8 +5,11 @@
 #include "Constants.h"
 #include "Entity.h"
 #include "Inventory.h"
+#include "IsometricDrawer.h"
+CC_BEGIN_HEADER
+
 /* Contains all 2D widget implementations.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct FontDesc;
 
@@ -14,37 +17,33 @@ struct FontDesc;
 struct TextWidget {
 	Widget_Body
 	struct Texture tex;
-	PackedCol col;
+	PackedCol color;
 };
 #define TEXTWIDGET_MAX 4
 
 /* Initialises a text widget. */
 CC_NOINLINE void TextWidget_Init(struct TextWidget* w);
+/* Initialises then adds a text widget. */
+CC_NOINLINE void TextWidget_Add(void* screen, struct TextWidget* w);
 /* Draws the given text into a texture, then updates the position and size of this widget. */
 CC_NOINLINE void TextWidget_Set(struct TextWidget* w, const cc_string* text, struct FontDesc* font);
 /* Shorthand for TextWidget_Set using String_FromReadonly */
 CC_NOINLINE void TextWidget_SetConst(struct TextWidget* w, const char* text, struct FontDesc* font);
 
-
-typedef void (*Button_Get)(cc_string* raw);
-typedef void (*Button_Set)(const cc_string* raw);
 /* A labelled button that can be clicked on. */
 struct ButtonWidget {
 	Widget_Body
 	struct Texture tex;
-	PackedCol col;
+	PackedCol color;
 	int minWidth, minHeight;
 	const char* optName;
-	Button_Get GetValue;
-	Button_Set SetValue;
 };
 #define BUTTONWIDGET_MAX 12
 
 /* Initialises a button widget. */
-CC_NOINLINE void ButtonWidget_Make(struct ButtonWidget* w, int minWidth, Widget_LeftClick onClick, 
-								cc_uint8 horAnchor, cc_uint8 verAnchor, int xOffset, int yOffset);
-/* Initialises a button widget. */
 CC_NOINLINE void ButtonWidget_Init(struct ButtonWidget* w, int minWidth, Widget_LeftClick onClick);
+/* Initialises then adds a button widget. */
+CC_NOINLINE void ButtonWidget_Add(void* screen, struct ButtonWidget* w, int minWidth, Widget_LeftClick onClick);
 /* Draws the given text into a texture, then updates the position and size of this widget. */
 CC_NOINLINE void ButtonWidget_Set(struct ButtonWidget* w, const cc_string* text, struct FontDesc* font);
 /* Shorthand for ButtonWidget_Set using String_FromReadonly */
@@ -61,8 +60,9 @@ struct ScrollbarWidget {
 	int nubsWidth, offsets[3];
 };
 /* Resets state of the given scrollbar widget to default. */
-CC_NOINLINE void ScrollbarWidget_Create(struct ScrollbarWidget* w);
+CC_NOINLINE void ScrollbarWidget_Create(struct ScrollbarWidget* w, int width);
 
+#define HOTBAR_CORE_VERTICES (INVENTORY_BLOCKS_PER_HOTBAR * ISOMETRICDRAWER_MAXVERTICES)
 /* A row of blocks with a background. */
 struct HotbarWidget {
 	Widget_Body
@@ -72,15 +72,19 @@ struct HotbarWidget {
 	float scrollAcc, scale;
 	cc_bool altHandled;
 	struct Texture ellipsisTex;
-#ifdef CC_BUILD_TOUCH
+	int state[HOTBAR_CORE_VERTICES / 4];
+	int verticesCount;
 	int touchId[HOTBAR_MAX_INDEX];
-	double touchTime[HOTBAR_MAX_INDEX];
-#endif
+	float touchTime[HOTBAR_MAX_INDEX];
 };
+#define HOTBAR_MAX_VERTICES (4 + 4 + HOTBAR_CORE_VERTICES)
+
 /* Resets state of the given hotbar widget to default. */
 CC_NOINLINE void HotbarWidget_Create(struct HotbarWidget* w);
 CC_NOINLINE void HotbarWidget_SetFont(struct HotbarWidget* w, struct FontDesc* font);
+CC_NOINLINE void HotbarWidget_Update(struct HotbarWidget* w, float delta);
 
+#define TABLE_MAX_VERTICES (8 * 10 * ISOMETRICDRAWER_MAXVERTICES)
 /* A table of blocks. */
 struct TableWidget {
 	Widget_Body
@@ -90,23 +94,28 @@ struct TableWidget {
 	int selectedIndex, cellSizeX, cellSizeY;
 	float normBlockSize, selBlockSize;
 	GfxResourceID vb;
-	cc_bool pendingClose;
+	cc_bool pendingClose, everCreated;
 	float scale;
+	float padXAcc, padYAcc;
 
 	BlockID blocks[BLOCK_COUNT];
 	struct ScrollbarWidget scroll;
 	int lastX, lastY, paddingX;
 	int paddingL, paddingR, paddingT, paddingB;
 	void (*UpdateTitle)(BlockID block);
+
+	int state[TABLE_MAX_VERTICES / 4];
+	int verticesCount;
 };
 
-CC_NOINLINE void TableWidget_Create(struct TableWidget* w);
+CC_NOINLINE void TableWidget_Add(void* screen, struct TableWidget* w, int sbWidth);
 /* Sets the selected block in the table to the given block. */
 /* Also adjusts scrollbar and moves cursor to be over the given block. */
-CC_NOINLINE void TableWidget_SetBlockTo(struct TableWidget* w, BlockID block);
+CC_NOINLINE void TableWidget_SetToBlock(struct TableWidget* w, BlockID block);
+CC_NOINLINE void TableWidget_SetToIndex(struct TableWidget* w, int index);
 CC_NOINLINE void TableWidget_RecreateBlocks(struct TableWidget* w);
 CC_NOINLINE void TableWidget_OnInventoryChanged(struct TableWidget* w);
-CC_NOINLINE void TableWidget_Recreate(struct TableWidget* w);
+CC_NOINLINE void TableWidget_RecreateTitle(struct TableWidget* w, cc_bool force);
 
 
 #define INPUTWIDGET_MAX_LINES 3
@@ -136,7 +145,7 @@ struct InputWidget {
 	int caretOffset;
 	PackedCol caretCol;
 	struct Texture caretTex;
-	double caretAccumulator;
+	float caretAccumulator;
 };
 
 /* Removes all characters and then deletes the input texture. */
@@ -146,12 +155,12 @@ CC_NOINLINE void InputWidget_AppendText(struct InputWidget* w, const cc_string* 
 /* Tries appending the given character, then updates the input texture. */
 CC_NOINLINE void InputWidget_Append(struct InputWidget* w, char c);
 /* Redraws text and recalculates associated state. */
-/* Also calls Window_SetKeyboardText with the text in the input widget. */
+/* Also calls OnscreenKeyboard_SetText with the text in the input widget. */
 /* This way native text input state stays synchronised with the input widget. */
 /* (e.g. may only accept numerical input, so 'c' gets stripped from str) */
 CC_NOINLINE void InputWidget_UpdateText(struct InputWidget* w);
 /* Shorthand for InputWidget_Clear followed by InputWidget_AppendText, */
-/* then calls Window_SetKeyboardText with the text in the input widget. */
+/* then calls OnscreenKeyboard_SetText with the text in the input widget. */
 /* This way native text input state stays synchronised with the input widget. */
 /* (e.g. may only accept numerical input, so 'c' gets stripped from str) */
 CC_NOINLINE void InputWidget_SetText(struct InputWidget* w, const cc_string* str);
@@ -170,6 +179,9 @@ struct MenuInputVTABLE {
 	cc_bool (*IsValidValue)(struct MenuInputDesc*  d, const cc_string* s);
 	/* Gets the default value for this input. */
 	void (*GetDefault)(struct MenuInputDesc*       d, cc_string* value);
+	/* Whether the given input button was processed */
+	/* E.g. Int input accepts using lef/right to increment/decrement */
+	cc_bool (*ProcessInput)(struct MenuInputDesc*  d, cc_string* value, int btn);
 };
 
 struct MenuInputDesc {
@@ -209,8 +221,10 @@ struct TextInputWidget {
 #define MENUINPUTWIDGET_MAX 8
 
 CC_NOINLINE void TextInputWidget_Create(struct TextInputWidget* w, int width, const cc_string* text, struct MenuInputDesc* d);
+CC_NOINLINE void TextInputWidget_Add(void* screen, struct TextInputWidget* w, int width, const cc_string* text, struct MenuInputDesc* d);
 /* Sets the font used, then redraws the input widget. */
 CC_NOINLINE void TextInputWidget_SetFont(struct TextInputWidget* w, struct FontDesc* font);
+CC_NOINLINE void TextInputWidget_OpenKeyboard(struct TextInputWidget* w);
 
 
 struct ChatInputWidget {
@@ -261,7 +275,7 @@ CC_NOINLINE void TextGroupWidget_RedrawAll(struct TextGroupWidget* w);
 /* Typically only called in response to the ChatEvents.ColCodeChanged event. */
 CC_NOINLINE void TextGroupWidget_RedrawAllWithCol(struct TextGroupWidget* w, char col);
 /* Gets the text for the i'th line. */
-static cc_string TextGroupWidget_UNSAFE_Get(struct TextGroupWidget* w, int i) { return w->GetLine(i); }
+static CC_INLINE cc_string TextGroupWidget_UNSAFE_Get(struct TextGroupWidget* w, int i) { return w->GetLine(i); }
 
 
 typedef void (*SpecialInputAppendFunc)(void* userData, char c);
@@ -290,11 +304,16 @@ CC_NOINLINE void SpecialInputWidget_UpdateCols(struct SpecialInputWidget* w);
 CC_NOINLINE void SpecialInputWidget_SetActive(struct SpecialInputWidget* w, cc_bool active);
 
 #ifdef CC_BUILD_TOUCH
-struct ThumbstickWidget { Widget_Body; float scale; };
+struct ThumbstickWidget {
+	Widget_Body 
+	float scale; 
+};
 #define THUMBSTICKWIDGET_PER (4 * 4)
 #define THUMBSTICKWIDGET_MAX (THUMBSTICKWIDGET_PER * 2)
 
 void ThumbstickWidget_Init(struct ThumbstickWidget* w);
 void ThumbstickWidget_GetMovement(struct ThumbstickWidget* w, float* xMoving, float* zMoving);
 #endif
+
+CC_END_HEADER
 #endif

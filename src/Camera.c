@@ -7,18 +7,40 @@
 #include "Gui.h"
 #include "Entity.h"
 #include "Input.h"
+#include "InputHandler.h"
 #include "Event.h"
 #include "Options.h"
 #include "Picking.h"
+#include "Platform.h"
 
 struct _CameraData Camera;
 static struct RayTracer cameraClipPos;
 static Vec2 cam_rotOffset;
 static cc_bool cam_isForwardThird;
-static float cam_deltaX, cam_deltaY;
 
-static void Camera_OnRawMovement(float deltaX, float deltaY) {
-	cam_deltaX += deltaX; cam_deltaY += deltaY;
+static struct CameraState {
+	float deltaX, deltaY;
+} states[MAX_LOCAL_PLAYERS];
+
+static void Camera_OnRawMovement(float deltaX, float deltaY, int deviceIndex) {
+	int i = Game_MapState(deviceIndex);
+	states[i].deltaX += deltaX; 
+	states[i].deltaY += deltaY;
+}
+
+void Camera_KeyLookUpdate(float delta) {
+	float amount;
+	int i;
+	if (Gui.InputGrab) return;
+
+	/* divide by 25 to have reasonable sensitivity for default mouse sens */
+	amount = (Camera.Sensitivity / 25.0f) * (1000 * delta);
+	i = Game.CurrentState;
+
+	if (Bind_IsTriggered[BIND_LOOK_UP])    states[i].deltaY -= amount;
+	if (Bind_IsTriggered[BIND_LOOK_DOWN])  states[i].deltaY += amount;
+	if (Bind_IsTriggered[BIND_LOOK_LEFT])  states[i].deltaX -= amount;
+	if (Bind_IsTriggered[BIND_LOOK_RIGHT]) states[i].deltaX += amount;
 }
 
 /*########################################################################################################################*
@@ -33,30 +55,33 @@ static void PerspectiveCamera_GetProjection(struct Matrix* proj) {
 static void PerspectiveCamera_GetView(struct Matrix* mat) {
 	Vec3 pos = Camera.CurrentPos;
 	Vec2 rot = Camera.Active->GetOrientation();
+
 	Matrix_LookRot(mat, pos, rot);
-	Matrix_MulBy(mat, &Camera.TiltM);
+	if (Game_ViewBobbing) Matrix_MulBy(mat, &Camera.TiltM);
 }
 
 static void PerspectiveCamera_GetPickedBlock(struct RayTracer* t) {
-	struct Entity* p = &LocalPlayer_Instance.Base;
-	Vec3 dir    = Vec3_GetDirVector(p->Yaw * MATH_DEG2RAD, p->Pitch * MATH_DEG2RAD + Camera.TiltPitch);
-	Vec3 eyePos = Entity_GetEyePosition(p);
-	float reach = LocalPlayer_Instance.ReachDistance;
-	Picking_CalcPickedBlock(&eyePos, &dir, reach, t);
+	struct LocalPlayer* p = Entities.CurPlayer;
+	struct Entity* e      = &p->Base;
+
+	Vec3 dir    = Vec3_GetDirVector(e->Yaw * MATH_DEG2RAD, e->Pitch * MATH_DEG2RAD + Camera.TiltPitch);
+	Vec3 eyePos = Entity_GetEyePosition(e);
+	Picking_CalcPickedBlock(&eyePos, &dir, p->ReachDistance, t);
 }
 
 #define CAMERA_SENSI_FACTOR (0.0002f / 3.0f * MATH_RAD2DEG)
 
-static Vec2 PerspectiveCamera_GetMouseDelta(double delta) {
+static Vec2 PerspectiveCamera_GetMouseDelta(float delta) {
 	float sensitivity = CAMERA_SENSI_FACTOR * Camera.Sensitivity;
 	static float speedX, speedY, newSpeedX, newSpeedY, accelX, accelY;
+	int i = Game.CurrentState;
 	Vec2 v;
 
 	if (Camera.Smooth) {
-		accelX = (cam_deltaX - speedX) * 35 / Camera.Mass;
-		accelY = (cam_deltaY - speedY) * 35 / Camera.Mass;
-		newSpeedX = accelX * (float)delta + speedX;
-		newSpeedY = accelY * (float)delta + speedY;
+		accelX = (states[i].deltaX - speedX) * 35 / Camera.Mass;
+		accelY = (states[i].deltaY - speedY) * 35 / Camera.Mass;
+		newSpeedX = accelX * delta + speedX;
+		newSpeedY = accelY * delta + speedY;
 
 		/* High acceleration means velocity overshoots the correct position on low FPS, */
 		/* causing wiggling. If newSpeed has opposite sign of speed, set speed to 0 */
@@ -65,28 +90,30 @@ static Vec2 PerspectiveCamera_GetMouseDelta(double delta) {
 		if (newSpeedY * speedY < 0) speedY = 0;
 		else speedY = newSpeedY;
 	} else {
-		speedX = cam_deltaX;
-		speedY = cam_deltaY;
+		speedX = states[i].deltaX;
+		speedY = states[i].deltaY;
 	}
 
-	v.X = speedX * sensitivity; v.Y = speedY * sensitivity;
-	if (Camera.Invert) v.Y = -v.Y;
+	v.x = speedX * sensitivity; 
+	v.y = speedY * sensitivity;
+	if (Camera.Invert) v.y = -v.y;
 	return v;
 }
 
-static void PerspectiveCamera_UpdateMouseRotation(double delta) {
-	struct Entity* e = &LocalPlayer_Instance.Base;
+static void PerspectiveCamera_UpdateMouseRotation(struct LocalPlayer* p, float delta) {
+	struct Entity* e = &p->Base;
 	struct LocationUpdate update;
 	Vec2 rot = PerspectiveCamera_GetMouseDelta(delta);
 
-	if (Key_IsAltPressed() && Camera.Active->isThirdPerson) {
-		cam_rotOffset.X += rot.X; cam_rotOffset.Y += rot.Y;
+	if (Input_IsAltPressed() && Camera.Active->isThirdPerson) {
+		cam_rotOffset.x += rot.x; 
+		cam_rotOffset.y += rot.y;
 		return;
 	}
 	
 	update.flags = LU_HAS_YAW | LU_HAS_PITCH;
-	update.yaw   = e->next.yaw   + rot.X;
-	update.pitch = e->next.pitch + rot.Y;
+	update.yaw   = e->next.yaw   + rot.x;
+	update.pitch = e->next.pitch + rot.y;
 	update.pitch = Math_ClampAngle(update.pitch);
 
 	/* Need to make sure we don't cross the vertical axes, because that gets weird. */
@@ -96,19 +123,20 @@ static void PerspectiveCamera_UpdateMouseRotation(double delta) {
 	e->VTABLE->SetLocation(e, &update);
 }
 
-static void PerspectiveCamera_UpdateMouse(double delta) {
-	if (!Gui.InputGrab && WindowInfo.Focused) Window_UpdateRawMouse();
+static void PerspectiveCamera_UpdateMouse(struct LocalPlayer* p, float delta) {
+	int i = Game.CurrentState;
+	if (!Gui.InputGrab && Window_Main.Focused) Window_UpdateRawMouse();
 
-	PerspectiveCamera_UpdateMouseRotation(delta);
-	cam_deltaX = 0; cam_deltaY = 0;
+	PerspectiveCamera_UpdateMouseRotation(p, delta);
+	states[i].deltaX = 0; 
+	states[i].deltaY = 0;
 }
 
-static void PerspectiveCamera_CalcViewBobbing(float t, float velTiltScale) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static void PerspectiveCamera_CalcViewBobbing(struct LocalPlayer* p, float t, float velTiltScale) {
 	struct Entity* e = &p->Base;
-
 	struct Matrix tiltY, velX;
 	float vel, fall;
+	
 	if (!Game_ViewBobbing) { 
 		Camera.TiltM     = Matrix_Identity;
 		Camera.TiltPitch = 0.0f;
@@ -122,7 +150,9 @@ static void PerspectiveCamera_CalcViewBobbing(float t, float velTiltScale) {
 	Camera.BobbingHor = (e->Anim.BobbingHor * 0.3f) * e->Anim.BobStrength;
 	Camera.BobbingVer = (e->Anim.BobbingVer * 0.6f) * e->Anim.BobStrength;
 
-	vel  = Math_Lerp(p->OldVelocity.Y + 0.08f, e->Velocity.Y + 0.08f, t);
+	/* When standing on the ground, velocity.y is -0.08 (-gravity) */
+	/* So add 0.08 to counteract that, so that vel is 0 when standing on ground */
+	vel  = 0.08f + Math_Lerp(p->OldVelocity.y, e->Velocity.y, t);
 	fall = -vel * 0.05f * p->Tilt.VelTiltStrength / velTiltScale;
 
 	Matrix_RotateX(&velX, fall);
@@ -135,22 +165,26 @@ static void PerspectiveCamera_CalcViewBobbing(float t, float velTiltScale) {
 *---------------------------------------------------First person camera---------------------------------------------------*
 *#########################################################################################################################*/
 static Vec2 FirstPersonCamera_GetOrientation(void) {
-	struct Entity* p = &LocalPlayer_Instance.Base;
-	Vec2 v;	
-	v.X = p->Yaw   * MATH_DEG2RAD; 
-	v.Y = p->Pitch * MATH_DEG2RAD;
+	struct LocalPlayer* p = Entities.CurPlayer;
+	struct Entity* e = &p->Base;
+
+	Vec2 v;
+	v.x = e->Yaw   * MATH_DEG2RAD; 
+	v.y = e->Pitch * MATH_DEG2RAD;
 	return v;
 }
 
 static Vec3 FirstPersonCamera_GetPosition(float t) {
-	struct Entity* p = &LocalPlayer_Instance.Base;
-	Vec3 camPos   = Entity_GetEyePosition(p);
-	float yaw     = p->Yaw * MATH_DEG2RAD;
-	PerspectiveCamera_CalcViewBobbing(t, 1);
+	struct LocalPlayer* p = Entities.CurPlayer;
+	struct Entity* e = &p->Base;
+
+	Vec3 camPos   = Entity_GetEyePosition(e);
+	float yaw     = e->Yaw * MATH_DEG2RAD;
+	PerspectiveCamera_CalcViewBobbing(p, t, 1);
 	
-	camPos.Y += Camera.BobbingVer;
-	camPos.X += Camera.BobbingHor * (float)Math_Cos(yaw);
-	camPos.Z += Camera.BobbingHor * (float)Math_Sin(yaw);
+	camPos.y += Camera.BobbingVer;
+	camPos.x += Camera.BobbingHor * Math_CosF(yaw);
+	camPos.z += Camera.BobbingHor * Math_SinF(yaw);
 	return camPos;
 }
 
@@ -172,40 +206,44 @@ static struct Camera cam_FirstPerson = {
 static float dist_third = DEF_ZOOM, dist_forward = DEF_ZOOM;
 
 static Vec2 ThirdPersonCamera_GetOrientation(void) {
-	struct Entity* p = &LocalPlayer_Instance.Base;
-	Vec2 v;	
-	v.X = p->Yaw   * MATH_DEG2RAD; 
-	v.Y = p->Pitch * MATH_DEG2RAD;
-	if (cam_isForwardThird) { v.X += MATH_PI; v.Y = -v.Y; }
+	struct LocalPlayer* p = Entities.CurPlayer;
+	struct Entity* e = &p->Base;
 
-	v.X += cam_rotOffset.X * MATH_DEG2RAD; 
-	v.Y += cam_rotOffset.Y * MATH_DEG2RAD;
+	Vec2 v;	
+	v.x = e->Yaw   * MATH_DEG2RAD; 
+	v.y = e->Pitch * MATH_DEG2RAD;
+	if (cam_isForwardThird) { v.x += MATH_PI; v.y = -v.y; }
+
+	v.x += cam_rotOffset.x * MATH_DEG2RAD; 
+	v.y += cam_rotOffset.y * MATH_DEG2RAD;
 	return v;
 }
 
-static float ThirdPersonCamera_GetZoom(void) {
+static float ThirdPersonCamera_GetZoom(struct LocalPlayer* p) {
 	float dist = cam_isForwardThird ? dist_forward : dist_third;
 	/* Don't allow zooming out when -fly */
-	if (dist > DEF_ZOOM && !LocalPlayer_CheckCanZoom()) dist = DEF_ZOOM;
+	if (dist > DEF_ZOOM && !LocalPlayer_CheckCanZoom(p)) dist = DEF_ZOOM;
 	return dist;
 }
 
 static Vec3 ThirdPersonCamera_GetPosition(float t) {
-	struct Entity* p = &LocalPlayer_Instance.Base;
-	float dist = ThirdPersonCamera_GetZoom();
+	struct LocalPlayer* p = Entities.CurPlayer;
+	struct Entity* e = &p->Base;
+
+	float dist = ThirdPersonCamera_GetZoom(p);
 	Vec3 target, dir;
 	Vec2 rot;
 
-	PerspectiveCamera_CalcViewBobbing(t, dist);
-	target = Entity_GetEyePosition(p);
-	target.Y += Camera.BobbingVer;
+	PerspectiveCamera_CalcViewBobbing(p, t, dist);
+	target = Entity_GetEyePosition(e);
+	target.y += Camera.BobbingVer;
 
 	rot = Camera.Active->GetOrientation();
-	dir = Vec3_GetDirVector(rot.X, rot.Y);
+	dir = Vec3_GetDirVector(rot.x, rot.y);
 	Vec3_Negate(&dir, &dir);
 
 	Picking_ClipCameraPos(&target, &dir, dist, &cameraClipPos);
-	return cameraClipPos.Intersect;
+	return cameraClipPos.intersect;
 }
 
 static cc_bool ThirdPersonCamera_Zoom(float amount) {
@@ -238,17 +276,24 @@ static struct Camera cam_ForwardThird = {
 *-----------------------------------------------------General camera------------------------------------------------------*
 *#########################################################################################################################*/
 static void OnRawMovement(void* obj, float deltaX, float deltaY) {
-	Camera.Active->OnRawMovement(deltaX, deltaY);
+	Camera.Active->OnRawMovement(deltaX, deltaY, 0);
+}
+
+static void OnAxisUpdate(void* obj, int port, int axis, float x, float y) {
+	if (!Input.RawMode) return;
+	if (Gamepad_AxisBehaviour[axis] != AXIS_BEHAVIOUR_CAMERA) return;
+
+	Camera.Active->OnRawMovement(x, y, port);
 }
 
 static void OnHacksChanged(void* obj) {
-	struct HacksComp* h = &LocalPlayer_Instance.Hacks;
+	struct HacksComp* h = &Entities.CurPlayer->Hacks;
 	/* Leave third person if not allowed anymore */
 	if (!h->CanUseThirdPerson || !h->Enabled) Camera_CycleActive();
 }
 
 void Camera_CycleActive(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+	struct LocalPlayer* p = &LocalPlayer_Instances[0];
 	if (Game_ClassicMode) return;
 	Camera.Active = Camera.Active->next;
 
@@ -258,7 +303,7 @@ void Camera_CycleActive(void) {
 	cam_isForwardThird = Camera.Active == &cam_ForwardThird;
 
 	/* reset rotation offset when changing cameras */
-	cam_rotOffset.X = 0.0f; cam_rotOffset.Y = 0.0f;
+	cam_rotOffset.x = 0.0f; cam_rotOffset.y = 0.0f;
 	Camera_UpdateProjection();
 }
 
@@ -291,17 +336,23 @@ void Camera_SetFov(int fov) {
 
 void Camera_UpdateProjection(void) {
 	Camera.Active->GetProjection(&Gfx.Projection);
-	Gfx_LoadMatrix(MATRIX_PROJECTION, &Gfx.Projection);
+	Gfx_LoadMatrix(MATRIX_PROJ,  &Gfx.Projection);
 	Event_RaiseVoid(&GfxEvents.ProjectionChanged);
+}
+
+static void ZoomScrollReleased(int key, struct InputDevice* device) {
+	Camera_SetFov(Camera.DefaultFov);
 }
 
 static void OnInit(void) {
 	Camera_Register(&cam_FirstPerson);
 	Camera_Register(&cam_ThirdPerson);
 	Camera_Register(&cam_ForwardThird);
+	Bind_OnReleased[BIND_ZOOM_SCROLL] = ZoomScrollReleased;
 
 	Camera.Active = &cam_FirstPerson;
 	Event_Register_(&PointerEvents.RawMoved,      NULL, OnRawMovement);
+	Event_Register_(&ControllerEvents.AxisUpdate, NULL, OnAxisUpdate);
 	Event_Register_(&UserEvents.HackPermsChanged, NULL, OnHacksChanged);
 
 #ifdef CC_BUILD_WIN

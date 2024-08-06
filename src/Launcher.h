@@ -1,8 +1,10 @@
 #ifndef CC_LAUNCHER_H
 #define CC_LAUNCHER_H
 #include "Bitmap.h"
+CC_BEGIN_HEADER
+
 /* Implements the launcher part of the game.
-	Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+	Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct LScreen;
 struct FontDesc;
@@ -54,10 +56,10 @@ void Launcher_SaveTheme(void);
 
 /* Whether logo should be drawn using bitmapped text */
 cc_bool Launcher_BitmappedText(void);
-/* Draws logo styled text using the given font */
-void Launcher_DrawLogo(struct FontDesc* font, const char* text, struct Context2D* ctx);
-/* Allocates a font appropriate for drawing logo text */
-void Launcher_MakeLogoFont(struct FontDesc* font);
+/* Draws title styled text using the given font */
+void Launcher_DrawTitle(struct FontDesc* font, const char* text, struct Context2D* ctx);
+/* Allocates a font appropriate for drawing title text */
+void Launcher_MakeTitleFont(struct FontDesc* font);
 
 /* Attempts to load font and terrain from texture pack. */
 void Launcher_TryLoadTexturePack(void);
@@ -78,4 +80,6 @@ cc_bool Launcher_StartGame(const cc_string* user, const cc_string* mppass, const
 /* Prints information about a http error to dst. (for status widget) */
 /* If req->result is non-zero, also displays a dialog box on-screen. */
 void Launcher_DisplayHttpError(struct HttpRequest* req, const char* action, cc_string* dst);
+
+CC_END_HEADER
 #endif

@@ -1,6 +1,8 @@
 #ifndef CC_DEFLATE_H
 #define CC_DEFLATE_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* Decodes data compressed using DEFLATE in a streaming manner.
    Partially based off information from
 	https://handmade.network/forums/wip/t/2363-implementing_a_basic_png_reader_the_handmade_way
@@ -8,7 +10,7 @@
 	https://www.ietf.org/rfc/rfc1951.txt
 	https://github.com/nothings/stb/blob/master/stb_image.h
 	https://www.hanshq.net/zip.html
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct Stream;
 
@@ -27,16 +29,20 @@ cc_result ZLibHeader_Read(struct Stream* s, struct ZLibHeader* header);
 #define INFLATE_MAX_DISTS 32
 #define INFLATE_MAX_LITS_DISTS (INFLATE_MAX_LITS + INFLATE_MAX_DISTS)
 #define INFLATE_MAX_BITS 16
+
 #define INFLATE_FAST_BITS 9
+#define INFLATE_FAST_LEN_SHIFT 9
+#define INFLATE_FAST_VAL_MASK  0x1FF
+
 #define INFLATE_WINDOW_SIZE 0x8000UL
 #define INFLATE_WINDOW_MASK 0x7FFFUL
 
 struct HuffmanTable {
-	cc_int16 Fast[1 << INFLATE_FAST_BITS];      /* Fast lookup table for huffman codes */
-	cc_uint16 FirstCodewords[INFLATE_MAX_BITS]; /* Starting codeword for each bit length */
-	cc_uint16 EndCodewords[INFLATE_MAX_BITS];   /* (Last codeword + 1) for each bit length. 0 is ignored. */
-	cc_uint16 FirstOffsets[INFLATE_MAX_BITS];   /* Base offset into Values for codewords of each bit length. */
-	cc_uint16 Values[INFLATE_MAX_LITS];         /* Values/Symbols list */
+	cc_int16 fast[1 << INFLATE_FAST_BITS];      /* Fast lookup table for huffman codes */
+	cc_uint16 firstCodewords[INFLATE_MAX_BITS]; /* Starting codeword for each bit length */
+	cc_uint16 endCodewords[INFLATE_MAX_BITS];   /* (Last codeword + 1) for each bit length. 0 is ignored. */
+	cc_uint16 firstOffsets[INFLATE_MAX_BITS];   /* Base offset into Values for codewords of each bit length. */
+	cc_uint16 values[INFLATE_MAX_LITS];         /* Values/Symbols list */
 };
 
 struct InflateState {
@@ -97,8 +103,10 @@ struct DeflateState {
 	
 	cc_uint8 Input[DEFLATE_BUFFER_SIZE];
 	cc_uint8 Output[DEFLATE_OUT_SIZE];
-	int Head[DEFLATE_HASH_SIZE];
-	int Prev[DEFLATE_BUFFER_SIZE];
+	cc_uint16 Head[DEFLATE_HASH_SIZE];
+	cc_uint16 Prev[DEFLATE_BUFFER_SIZE];
+	/* NOTE: The largest possible value that can get */
+	/*  stored in Head/Prev is <= DEFLATE_BUFFER_SIZE */
 	cc_bool WroteHeader;
 };
 /* Compresses input data using DEFLATE, then writes compressed output to another stream. Write only stream. */
@@ -108,15 +116,17 @@ CC_API void Deflate_MakeStream(struct Stream* stream, struct DeflateState* state
 struct GZipState { struct DeflateState Base; cc_uint32 Crc32, Size; };
 /* Compresses input data using GZIP, then writes compressed output to another stream. Write only stream. */
 /* GZIP compression is GZIP header, followed by DEFLATE compressed data, followed by GZIP footer. */
-CC_API void GZip_MakeStream(struct Stream* stream, struct GZipState* state, struct Stream* underlying);
+CC_API  void GZip_MakeStream(      struct Stream* stream, struct GZipState* state, struct Stream* underlying);
+typedef void (*FP_GZip_MakeStream)(struct Stream* stream, struct GZipState* state, struct Stream* underlying);
 
 struct ZLibState { struct DeflateState Base; cc_uint32 Adler32; };
 /* Compresses input data using ZLIB, then writes compressed output to another stream. Write only stream. */
 /* ZLIB compression is ZLIB header, followed by DEFLATE compressed data, followed by ZLIB footer. */
-CC_API void ZLib_MakeStream(struct Stream* stream, struct ZLibState* state, struct Stream* underlying);
+CC_API  void ZLib_MakeStream(      struct Stream* stream, struct ZLibState* state, struct Stream* underlying);
+typedef void (*FP_ZLib_MakeStream)(struct Stream* stream, struct ZLibState* state, struct Stream* underlying);
 
 /* Minimal data needed to describe an entry in a .zip archive */
-struct ZipEntry { cc_uint32 CompressedSize, UncompressedSize, LocalHeaderOffset, CRC32; };
+struct ZipEntry { cc_uint32 CompressedSize, UncompressedSize, LocalHeaderOffset; };
 /* Callback function to process the data in a .zip archive entry */
 /* Return non-zero to indicate an error and stop further processing */
 /* NOTE: data stream MAY NOT be seekable (i.e. entry data might be compressed) */
@@ -125,5 +135,8 @@ typedef cc_result (*Zip_ProcessEntry)(const cc_string* path, struct Stream* data
 /* NOTE: returning false entirely skips the entry (avoids pointless seek to entry) */
 typedef cc_bool (*Zip_SelectEntry)(const cc_string* path);
 
-CC_API cc_result Zip_Extract(struct Stream* source, Zip_SelectEntry selector, Zip_ProcessEntry processor);
+cc_result Zip_Extract(struct Stream* source, Zip_SelectEntry selector, Zip_ProcessEntry processor,
+						struct ZipEntry* entries, int maxEntries);
+
+CC_END_HEADER
 #endif

@@ -27,18 +27,6 @@ void Platform_Log(const char* msg, int len) {
 /*########################################################################################################################*
 *-----------------------------------------------------Process/Module------------------------------------------------------*
 *#########################################################################################################################*/
-static char gameArgs[GAME_MAX_CMDARGS][STRING_SIZE];
-static int gameNumArgs;
-
-cc_result Process_StartGame2(const cc_string* args, int numArgs) {
-	for (int i = 0; i < numArgs; i++) {
-		String_CopyToRawArray(gameArgs[i], &args[i]);
-	}
-
-	gameNumArgs = numArgs;
-	return 0;
-}
-
 cc_result Process_StartOpen(const cc_string* args) {
 	JavaCall_String_Void("startOpen", args);
 	return 0;
@@ -102,17 +90,6 @@ void Directory_GetCachePath(cc_string* path) {
 /*########################################################################################################################*
 *-----------------------------------------------------Configuration-------------------------------------------------------*
 *#########################################################################################################################*/
-int Platform_GetCommandLineArgs(int argc, STRING_REF char** argv, cc_string* args) {
-	int count = gameNumArgs;
-	for (int i = 0; i < count; i++) {
-		args[i] = String_FromRawArray(gameArgs[i]);
-	}
-
-	// clear arguments so after game is closed, launcher is started
-    gameNumArgs = 0;
-    return count;
-}
-
 #include "Window.h"
 cc_result Platform_SetDefaultCurrentDirectory(int argc, char **argv) {
 	cc_string dir; char dirBuffer[FILENAME_SIZE + 1];
@@ -252,8 +229,7 @@ static void JNICALL java_runGameAsync(JNIEnv* env, jobject instance) {
 	Platform_LogConst("Running game async!");
 	/* The game must be run on a separate thread, as blocking the */
 	/* main UI thread will cause a 'App not responding..' messagebox */
-	thread = Thread_Create(android_main);
-	Thread_Start2(thread, android_main);
+	Thread_Run(&thread, android_main, 1024 * 1024, "Game"); // TODO check stack size needed
 	Thread_Detach(thread);
 }
 static const JNINativeMethod methods[] = {

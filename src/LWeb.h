@@ -2,8 +2,10 @@
 #define CC_LWEB_H
 #include "Bitmap.h"
 #include "Constants.h"
+CC_BEGIN_HEADER
+
 /* Implements asynchronous web tasks for the launcher.
-	Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+	Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 struct HttpRequest;
@@ -29,7 +31,7 @@ struct JsonContext {
 void Json_Init(struct JsonContext* ctx, STRING_REF char* str, int len);
 /* Parses the JSON text, invoking callbacks when value/array/objects are read. */
 /* NOTE: DO NOT persist the value argument in OnValue. */
-void Json_Parse(struct JsonContext* ctx);
+cc_bool Json_Parse(struct JsonContext* ctx);
 
 /* Represents all known details about a server. */
 struct ServerInfo {
@@ -133,4 +135,6 @@ void Flags_Free(void);
 
 void Session_Load(void);
 void Session_Save(void);
+
+CC_END_HEADER
 #endif

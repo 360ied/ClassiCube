@@ -5,10 +5,7 @@
 #include "Options.h"
 #include "Logger.h"
 #include "Platform.h"
-#include "Chat.h"
 #include "Utils.h"
-#include "Server.h"
-#include "HeldBlockRenderer.h"
 #include "Game.h"
 #include "ExtMath.h"
 #include "Camera.h"
@@ -16,23 +13,10 @@
 #include "World.h"
 #include "Event.h"
 #include "Window.h"
-#include "Entity.h"
 #include "Screens.h"
 #include "Block.h"
-#include "Menus.h"
-#include "Gui.h"
-#include "Protocol.h"
-#include "AxisLinesRenderer.h"
-#include "Picking.h"
 
-static cc_bool input_buttonsDown[3];
-static int input_pickingId = -1;
-static TimeMS input_lastClick;
-static float input_fovIndex = -1.0f;
-#ifdef CC_BUILD_WEB
-static cc_bool suppressEscape;
-#endif
-enum MouseButton_ { MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE };
+struct _InputState Input;
 /* Raises PointerEvents.Up or PointerEvents.Down */
 static void Pointer_SetPressed(int idx, cc_bool pressed);
 
@@ -41,12 +25,8 @@ static void Pointer_SetPressed(int idx, cc_bool pressed);
 *------------------------------------------------------Touch support------------------------------------------------------*
 *#########################################################################################################################*/
 #ifdef CC_BUILD_TOUCH
-static struct TouchPointer {
-	long id;
-	cc_uint8 type;
-	int begX, begY;
-	TimeMS start;
-} touches[INPUT_MAX_POINTERS];
+struct TouchPointer touches[INPUT_MAX_POINTERS];
+
 int Pointers_Count;
 int Input_TapMode  = INPUT_MODE_PLACE;
 int Input_HoldMode = INPUT_MODE_DELETE;
@@ -54,18 +34,6 @@ cc_bool Input_TouchMode;
 
 static void MouseStatePress(int button);
 static void MouseStateRelease(int button);
-
-static cc_bool AnyBlockTouches(void) {
-	int i;
-	for (i = 0; i < Pointers_Count; i++) {
-		if (!(touches[i].type & TOUCH_TYPE_BLOCKS)) continue;
-
-		/* Touch might be an 'all' type - remove 'gui' type */
-		touches[i].type &= TOUCH_TYPE_BLOCKS | TOUCH_TYPE_CAMERA;
-		return true;
-	}
-	return false;
-}
 
 static void ClearTouches(void) {
 	int i;
@@ -85,10 +53,11 @@ static cc_bool MovedFromBeg(int i, int x, int y) {
 
 static cc_bool TryUpdateTouch(long id, int x, int y) {
 	int i;
-	for (i = 0; i < Pointers_Count; i++) {
+	for (i = 0; i < Pointers_Count; i++) 
+	{
 		if (touches[i].id != id || !touches[i].type) continue;
 
-		if (Input_RawMode && (touches[i].type & TOUCH_TYPE_CAMERA)) {
+		if (Input.RawMode && (touches[i].type & TOUCH_TYPE_CAMERA)) {
 			/* If the pointer hasn't been locked to gui or block yet, moving a bit */
 			/* should cause the pointer to get locked to camera movement. */
 			if (touches[i].type == TOUCH_TYPE_ALL && MovedFromBeg(i, x, y)) {
@@ -110,19 +79,15 @@ void Input_AddTouch(long id, int x, int y) {
 	/* Check if already existing pointer with same ID */
 	if (TryUpdateTouch(id, x, y)) return;
 
-	for (i = 0; i < INPUT_MAX_POINTERS; i++) {
+	for (i = 0; i < INPUT_MAX_POINTERS; i++) 
+	{
 		if (touches[i].type) continue;
 
-		touches[i].id   = id;
-		touches[i].type = TOUCH_TYPE_ALL;
-		touches[i].begX = x;
-		touches[i].begY = y;
-
-		touches[i].start = DateTime_CurrentUTC_MS();
-		/* Also set last click time, otherwise quickly tapping */
-		/* sometimes triggers a 'delete' in InputHandler_Tick, */
-		/* and then another 'delete' in CheckBlockTap. */
-		input_lastClick  = touches[i].start;
+		touches[i].id    = id;
+		touches[i].type  = TOUCH_TYPE_ALL;
+		touches[i].begX  = x;
+		touches[i].begY  = y;
+		touches[i].start = Game.Time;
 
 		if (i == Pointers_Count) Pointers_Count++;
 		Pointer_SetPosition(i, x, y);
@@ -131,29 +96,6 @@ void Input_AddTouch(long id, int x, int y) {
 	}
 }
 void Input_UpdateTouch(long id, int x, int y) { TryUpdateTouch(id, x, y); }
-
-/* Quickly tapping should trigger a block place/delete */
-static void CheckBlockTap(int i) {
-	int btn, pressed;
-	if (DateTime_CurrentUTC_MS() > touches[i].start + 250) return;
-	if (touches[i].type != TOUCH_TYPE_ALL) return;
-
-	if (Input_TapMode == INPUT_MODE_PLACE) {
-		btn = MOUSE_RIGHT;
-	} else if (Input_TapMode == INPUT_MODE_DELETE) {
-		btn = MOUSE_LEFT;
-	} else { return; }
-
-	pressed = input_buttonsDown[btn];
-	MouseStatePress(btn);
-
-	if (btn == MOUSE_LEFT) { 
-		InputHandler_DeleteBlock();
-	} else { 
-		InputHandler_PlaceBlock();
-	}
-	if (!pressed) MouseStateRelease(btn);
-}
 
 void Input_RemoveTouch(long id, int x, int y) {
 	int i;
@@ -179,8 +121,6 @@ static void ClearTouches(void) { }
 /*########################################################################################################################*
 *-----------------------------------------------------------Key-----------------------------------------------------------*
 *#########################################################################################################################*/
-cc_bool Input_Pressed[INPUT_COUNT];
-
 #define Key_Function_Names \
 "F1",  "F2",  "F3",  "F4",  "F5",  "F6",  "F7",  "F8",  "F9",  "F10",\
 "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20",\
@@ -190,6 +130,23 @@ cc_bool Input_Pressed[INPUT_COUNT];
 "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",\
 "U", "V", "W", "X", "Y", "Z"
 
+#define Pad_Names \
+"PAD_A", "PAD_B", "PAD_X", "PAD_Y", "PAD_L", "PAD_R", \
+"PAD_Z", "PAD_C", "PAD_D", \
+"PAD_LEFT", "PAD_RIGHT", "PAD_UP", "PAD_DOWN", \
+"PAD_START", "PAD_SELECT", "PAD_ZL", "PAD_ZR", \
+"PAD_LSTICK", "PAD_RSTICK", \
+"PAD_CLEFT", "PAD_CRIGHT", "PAD_CUP", "PAD_CDOWN"
+
+#define Pad_DisplayNames \
+"A", "B", "X", "Y", "L", "R", \
+"Z", "C", "D", \
+"LEFT", "RIGHT", "UP", "DOWN", \
+"START", "SELECT", "ZL", "ZR", \
+"LSTICK", "RSTICK", \
+"CLEFT", "CRIGHT", "CUP", "CDOWN"
+
+/* Names for each input button when stored to disc */
 const char* const Input_StorageNames[INPUT_COUNT] = {
 	"None",
 	Key_Function_Names,
@@ -209,10 +166,20 @@ const char* const Input_StorageNames[INPUT_COUNT] = {
 	"Keypad5", "Keypad6", "Keypad7", "Keypad8", "Keypad9",
 	"KeypadDivide", "KeypadMultiply", "KeypadSubtract",
 	"KeypadAdd", "KeypadDecimal", "KeypadEnter",
-	"XButton1", "XButton2", "LeftMouse", "RightMouse", "MiddleMouse"
+
+	"XButton1", "XButton2", "LeftMouse", "RightMouse", "MiddleMouse",
+	"WheelUp", "WheelDown", "WheelLeft", "WheelRight",
+	"XButton3", "XButton4", "XButton5", "XButton6",
+	
+	"VolumeMute", "VolumeUp", "VolumeDown", "Sleep",
+	"MediaNext", "MediaPrev", "MediaPlay", "MediaStop",
+	"BrowserPrev", "BrowserNext", "BrowserRefresh", "BrowserStop", "BrowserSsearch", "BrowserFavorites", "BrowserHome",
+	"LaunchMail", "LaunchMedia", "LaunchApp1", "LaunchCalc", 
+
+	Pad_Names
 };
 
-const char* const Input_DisplayNames[INPUT_COUNT] = {
+const char* Input_DisplayNames[INPUT_COUNT] = {
 	"NONE",
 	Key_Function_Names,
 	"GRAVE", "MINUS", "PLUS", "LBRACKET", "RBRACKET", "SLASH",
@@ -231,28 +198,42 @@ const char* const Input_DisplayNames[INPUT_COUNT] = {
 	"NUMPAD5", "NUMPAD6", "NUMPAD7", "NUMPAD8", "NUMPAD9",
 	"DIVIDE", "MULTIPLY", "SUBTRACT",
 	"ADD", "DECIMAL", "NUMPADENTER",
-	"XBUTTON1", "XBUTTON2", "LMOUSE", "RMOUSE", "MMOUSE"
+
+	"XBUTTON1", "XBUTTON2", "LMOUSE", "RMOUSE", "MMOUSE",
+	"WHEELUP", "WHEELDOWN", "WHEELLEFT", "WHEELRIGHT",
+	"XBUTTON3", "XBUTTON4", "XBUTTON5", "XBUTTON6",
+	
+	"VOLUMEMUTE", "VOLUMEUP", "VOLUMEDOWN", "SLEEP",
+	"MEDIANEXT", "MEDIAPREV", "MEDIAPLAY", "MEDIASTOP",
+	"BROWSERPREV", "BROWSERNEXT", "BROWSERREFRESH", "BROWSERSTOP", "BROWSERSEARCH", "BROWSERFAVORITES", "BROWSERHOME",
+	"LAUNCHMAIL", "LAUNCHMEDIA", "LAUNCHAPP1", "LAUNCHCALC", 
+
+	Pad_DisplayNames
 };
 
 void Input_SetPressed(int key) {
-	cc_bool wasPressed = Input_Pressed[key];
-	Input_Pressed[key] = true;
-	Event_RaiseInput(&InputEvents.Down, key, wasPressed);
+	cc_bool wasPressed = Input.Pressed[key];
+	Input.Pressed[key] = true;
 
-	if (key == 'C' && Key_IsActionPressed()) Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_COPY,  0);
-	if (key == 'V' && Key_IsActionPressed()) Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_PASTE, 0);
+	if (key <= CCMOUSE_M) Event_RaiseInput(&InputEvents._down, key, wasPressed, &NormDevice);
+	Event_RaiseInput(&InputEvents.Down2, key, wasPressed, &NormDevice);
+
+	if (key == 'C' && Input_IsActionPressed()) Event_RaiseInput(&InputEvents.Down2, INPUT_CLIPBOARD_COPY,  0, &NormDevice);
+	if (key == 'V' && Input_IsActionPressed()) Event_RaiseInput(&InputEvents.Down2, INPUT_CLIPBOARD_PASTE, 0, &NormDevice);
 
 	/* don't allow multiple left mouse down events */
-	if (key != KEY_LMOUSE || wasPressed) return;
+	if (key != CCMOUSE_L || wasPressed) return;
 	Pointer_SetPressed(0, true);
 }
 
 void Input_SetReleased(int key) {
-	if (!Input_Pressed[key]) return;
-	Input_Pressed[key] = false;
+	if (!Input.Pressed[key]) return;
+	Input.Pressed[key] = false;
 
-	Event_RaiseInt(&InputEvents.Up, key);
-	if (key == KEY_LMOUSE) Pointer_SetPressed(0, false);
+	if (key <= CCMOUSE_M) Event_RaiseInput(&InputEvents._up, key, true, &NormDevice);
+	Event_RaiseInput(&InputEvents.Up2, key, true, &NormDevice);
+
+	if (key == CCMOUSE_L) Pointer_SetPressed(0, false);
 }
 
 void Input_Set(int key, int pressed) {
@@ -265,7 +246,7 @@ void Input_Set(int key, int pressed) {
 
 void Input_SetNonRepeatable(int key, int pressed) {
 	if (pressed) {
-		if (Input_Pressed[key]) return;
+		if (Input.Pressed[key]) return;
 		Input_SetPressed(key);
 	} else {
 		Input_SetReleased(key);
@@ -274,19 +255,76 @@ void Input_SetNonRepeatable(int key, int pressed) {
 
 void Input_Clear(void) {
 	int i;
-	for (i = 0; i < INPUT_COUNT; i++) {
-		if (Input_Pressed[i]) Input_SetReleased(i);
+	for (i = 0; i < INPUT_COUNT; i++) 
+	{
+		if (Input.Pressed[i]) Input_SetReleased(i);
 	}
 	/* TODO: Properly release instead of just clearing */
 	ClearTouches();
 }
+
+void Input_CalcDelta(int key, struct InputDevice* device, int* horDelta, int* verDelta) {
+	*horDelta = 0; *verDelta = 0;
+
+	if (key == device->leftButton  || key == CCKEY_KP4) *horDelta = -1;
+	if (key == device->rightButton || key == CCKEY_KP6) *horDelta = +1;
+	if (key == device->upButton    || key == CCKEY_KP8) *verDelta = -1;
+	if (key == device->downButton  || key == CCKEY_KP2) *verDelta = +1;
+}
+
+static cc_bool NormDevice_IsPressed(struct InputDevice* device, int key) { 
+	return Input.Pressed[key]; 
+}
+
+static cc_bool PadDevice_IsPressed(struct InputDevice* device, int key) {
+	struct GamepadDevice* gamepad = (struct GamepadDevice*)device;
+	if (!Input_IsPadButton(key)) return false;
+	
+	return gamepad->pressed[key - GAMEPAD_BEG_BTN];
+}
+
+static cc_bool TouchDevice_IsPressed(struct InputDevice* device, int key) { 
+	return false; 
+}
+
+struct InputDevice NormDevice = {
+	INPUT_DEVICE_NORMAL, 0, 0,
+	NormDevice_IsPressed,
+	/* General buttons */
+	CCKEY_UP, CCKEY_DOWN, CCKEY_LEFT, CCKEY_RIGHT,
+	CCKEY_ENTER,  CCKEY_KP_ENTER,
+	CCKEY_ESCAPE, CCKEY_PAUSE,
+	CCKEY_ESCAPE,
+	CCKEY_PAGEUP, CCKEY_PAGEDOWN,
+	/* Launcher buttons */
+	CCKEY_TAB,
+	/* Bindings */
+	"key-%c", KeyBind_Defaults, KeyBind_Mappings
+};
+static const struct InputDevice padDevice = {
+	INPUT_DEVICE_GAMEPAD, 0, 0,
+	PadDevice_IsPressed,
+	/* General buttons */
+	CCPAD_UP, CCPAD_DOWN, CCPAD_LEFT, CCPAD_RIGHT,
+	CCPAD_START, CCPAD_1,
+	CCPAD_START, 0,
+	CCPAD_SELECT,
+	0, 0,
+	/* Launcher buttons */
+	CCPAD_3,
+	/* Bindings */
+	"pad-%c", NULL, NULL
+};
+struct InputDevice TouchDevice = {
+	INPUT_DEVICE_TOUCH, 0, 0,
+	TouchDevice_IsPressed
+};
 
 
 /*########################################################################################################################*
 *----------------------------------------------------------Mouse----------------------------------------------------------*
 *#########################################################################################################################*/
 struct Pointer Pointers[INPUT_MAX_POINTERS];
-cc_bool Input_RawMode;
 
 void Pointer_SetPressed(int idx, cc_bool pressed) {
 	if (pressed) {
@@ -296,8 +334,35 @@ void Pointer_SetPressed(int idx, cc_bool pressed) {
 	}
 }
 
-void Mouse_ScrollWheel(float delta) {
+static float scrollingVAcc;
+void Mouse_ScrollVWheel(float delta) {
+	int steps = Utils_AccumulateWheelDelta(&scrollingVAcc, delta);
 	Event_RaiseFloat(&InputEvents.Wheel, delta);
+	
+	if (steps > 0) {
+		for (; steps != 0; steps--) 
+			Input_SetPressed(CCWHEEL_UP);
+		Input_SetReleased(CCWHEEL_UP);
+	} else if (steps < 0) {
+		for (; steps != 0; steps++) 
+			Input_SetPressed(CCWHEEL_DOWN);
+		Input_SetReleased(CCWHEEL_DOWN);
+	}
+}
+
+static float scrollingHAcc;
+void Mouse_ScrollHWheel(float delta) {
+	int steps = Utils_AccumulateWheelDelta(&scrollingHAcc, delta);
+	
+	if (steps > 0) {
+		for (; steps != 0; steps--) 
+			Input_SetPressed(CCWHEEL_RIGHT);
+		Input_SetReleased(CCWHEEL_RIGHT);
+	} else if (steps < 0) {
+		for (; steps != 0; steps++) 
+			Input_SetPressed(CCWHEEL_LEFT);
+		Input_SetReleased(CCWHEEL_LEFT);
+	}
 }
 
 void Pointer_SetPosition(int idx, int x, int y) {
@@ -315,19 +380,58 @@ void Pointer_SetPosition(int idx, int x, int y) {
 /*########################################################################################################################*
 *---------------------------------------------------------Keybinds--------------------------------------------------------*
 *#########################################################################################################################*/
-cc_uint8 KeyBinds[KEYBIND_COUNT];
-const cc_uint8 KeyBind_Defaults[KEYBIND_COUNT] = {
-	'W', 'S', 'A', 'D',
-	KEY_SPACE, 'R', KEY_ENTER, 'T',
-	'B', 'F', KEY_ENTER, KEY_TAB, 
-	KEY_LSHIFT, 'X', 'Z', 'Q', 'E', 
-	KEY_LALT, KEY_F3, KEY_F12, KEY_F11, 
-	KEY_F5, KEY_F1, KEY_F7, 'C', 
-	KEY_LCTRL, KEY_LMOUSE, KEY_MMOUSE, KEY_RMOUSE, 
-	KEY_F6, KEY_LALT, KEY_F8, 
-	'G', KEY_F10, 0
+/* The gamepad buttons that are bound to each input binding */
+static BindMapping padBind_Mappings[INPUT_MAX_GAMEPADS][BIND_COUNT];
+BindMapping KeyBind_Mappings[BIND_COUNT];
+
+const BindMapping PadBind_Defaults[BIND_COUNT] = {
+	{ CCPAD_UP,   0 },  { CCPAD_DOWN,  0 }, /* BIND_FORWARD, BIND_BACK */
+	{ CCPAD_LEFT, 0 },  { CCPAD_RIGHT, 0 }, /* BIND_LEFT, BIND_RIGHT */
+	{ CCPAD_1, 0 },     { 0, 0 },           /* BIND_JUMP, BIND_RESPAWN */
+	{ CCPAD_START, 0 }, { CCPAD_4,     0 }, /* BIND_SET_SPAWN, BIND_CHAT */
+	{ CCPAD_3, 0     }, { 0, 0 },           /* BIND_INVENTORY, BIND_FOG */
+	{ CCPAD_START, 0 }, { 0, 0 },           /* BIND_SEND_CHAT, BIND_TABLIST */
+	{ CCPAD_2, CCPAD_L},{ CCPAD_2, CCPAD_3},/* BIND_SPEED, BIND_NOCLIP */ 
+	{ CCPAD_2, CCPAD_R },                   /* BIND_FLY */ 
+	{CCPAD_2,CCPAD_UP},{CCPAD_2,CCPAD_DOWN},/* BIND_FLY_UP, BIND_FLY_DOWN */
+	{ 0, 0 }, { 0, 0 },                     /* BIND_EXT_INPUT, BIND_HIDE_FPS */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, /* BIND_SCREENSHOT, BIND_FULLSCREEN, BIND_THIRD_PERSON, BIND_HIDE_GUI */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 },           /* BIND_AXIS_LINES, BIND_ZOOM_SCROLL, BIND_HALF_SPEED */
+	{ CCPAD_L, 0 }, { 0, 0 },{ CCPAD_R, 0 },/* BIND_DELETE_BLOCK, BIND_PICK_BLOCK, BIND_PLACE_BLOCK */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 },           /* BIND_AUTOROTATE, BIND_HOTBAR_SWITCH, BIND_SMOOTH_CAMERA */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 },           /* BIND_DROP_BLOCK, BIND_IDOVERLAY, BIND_BREAK_LIQUIDS */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, /* BIND_LOOK_UP, BIND_LOOK_DOWN, BIND_LOOK_RIGHT, BIND_LOOK_LEFT */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 },           /* BIND_HOTBAR_1, BIND_HOTBAR_2, BIND_HOTBAR_3 */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 },           /* BIND_HOTBAR_4, BIND_HOTBAR_5, BIND_HOTBAR_6 */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 },           /* BIND_HOTBAR_7, BIND_HOTBAR_8, BIND_HOTBAR_9 */
+	{ CCPAD_ZL, 0 }, { CCPAD_ZR, 0 }        /* BIND_HOTBAR_LEFT, BIND_HOTBAR_RIGHT */
 };
-static const char* const keybindNames[KEYBIND_COUNT] = {
+
+const BindMapping KeyBind_Defaults[BIND_COUNT] = {
+	{ 'W', 0 }, { 'S', 0 }, { 'A', 0 }, { 'D', 0 }, /* BIND_FORWARD - BIND_RIGHT */
+	{ CCKEY_SPACE, 0 },  { 'R', 0 },                /* BIND_JUMP, BIND_RESPAWN */
+	{ CCKEY_ENTER, 0 },  { 'T', 0 },                /* BIND_SET_SPAWN, BIND_CHAT */
+	{ 'B', 0 },          { 'F', 0 },                /* BIND_INVENTORY, BIND_FOG */
+	{ CCKEY_ENTER, 0 },  { CCKEY_TAB, 0 },          /* BIND_SEND_CHAT, BIND_TABLIST */
+	{ CCKEY_LSHIFT, 0 }, { 'X', 0}, { 'Z', 0 },     /* BIND_SPEED, BIND_NOCLIP, BIND_FLY */ 
+	{ 'Q', 0 },          { 'E', 0 },                /* BIND_FLY_UP, BIND_FLY_DOWN */
+	{ CCKEY_LALT, 0 },   { CCKEY_F3, 0 },           /* BIND_EXT_INPUT, BIND_HIDE_FPS */
+	{ CCKEY_F12, 0 },    { CCKEY_F11, 0 },          /* BIND_SCREENSHOT, BIND_FULLSCREEN */
+	{ CCKEY_F5, 0 },     { CCKEY_F1, 0 },           /* BIND_THIRD_PERSON, BIND_HIDE_GUI */ 
+	{ CCKEY_F7, 0 }, { 'C', 0 }, { CCKEY_LCTRL, 0 },/* BIND_AXIS_LINES, BIND_ZOOM_SCROLL, BIND_HALF_SPEED */
+	{ CCMOUSE_L, 0},{ CCMOUSE_M, 0},{ CCMOUSE_R, 0},/* BIND_DELETE_BLOCK, BIND_PICK_BLOCK, BIND_PLACE_BLOCK */
+	{ CCKEY_F6, 0 },     { CCKEY_LALT, 0 },         /* BIND_AUTOROTATE, BIND_HOTBAR_SWITCH */
+
+	{ CCKEY_F8, 0 },     { 'G', 0 },                /* BIND_SMOOTH_CAMERA, BIND_DROP_BLOCK */
+	{ CCKEY_F10, 0 },    { 0, 0 },                  /* BIND_IDOVERLAY, BIND_BREAK_LIQUIDS */
+	{ 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },         /* BIND_LOOK_UP, BIND_LOOK_DOWN, BIND_LOOK_RIGHT, BIND_LOOK_LEFT */
+	{ '1', 0 }, { '2', 0 }, { '3', 0 },             /* BIND_HOTBAR_1, BIND_HOTBAR_2, BIND_HOTBAR_3 */
+	{ '4', 0 }, { '5', 0 }, { '6', 0 },             /* BIND_HOTBAR_4, BIND_HOTBAR_5, BIND_HOTBAR_6 */
+	{ '7', 0 }, { '8', 0 }, { '9', 0 },             /* BIND_HOTBAR_7, BIND_HOTBAR_8, BIND_HOTBAR_9 */
+	{ 0, 0 }, { 0, 0 }                              /* BIND_HOTBAR_LEFT, BIND_HOTBAR_RIGHT */
+};
+
+static const char* const bindNames[BIND_COUNT] = {
 	"Forward", "Back", "Left", "Right",
 	"Jump", "Respawn", "SetSpawn", "Chat", "Inventory", 
 	"ToggleFog", "SendChat", "PlayerList", 
@@ -336,799 +440,194 @@ static const char* const keybindNames[KEYBIND_COUNT] = {
 	"ThirdPerson", "HideGUI", "AxisLines", "ZoomScrolling", 
 	"HalfSpeed", "DeleteBlock", "PickBlock", "PlaceBlock", 
 	"AutoRotate", "HotbarSwitching", "SmoothCamera", 
-	"DropBlock", "IDOverlay", "BreakableLiquids"
+	"DropBlock", "IDOverlay", "BreakableLiquids",
+	"LookUp", "LookDown", "LookRight", "LookLeft",
+	"Hotbar1", "Hotbar2", "Hotbar3",
+	"Hotbar4", "Hotbar5", "Horbar6",
+	"Hotbar7", "Hotbar8", "Hotbar9",
+	"HotbarLeft", "HotbarRight"
 };
 
-cc_bool KeyBind_IsPressed(KeyBind binding) { return Input_Pressed[KeyBinds[binding]]; }
 
-static void KeyBind_Load(void) {
+#define BindMapping2_Claims(mapping, btn) (device->IsPressed(device, (mapping)->button1) && (mapping)->button2 == btn)
+cc_bool InputBind_Claims(InputBind binding, int btn, struct InputDevice* device) {
+	BindMapping* mappings = device->currentBinds;
+	BindMapping* bind = &mappings[binding];
+	int i;
+	if (bind->button2) return BindMapping2_Claims(bind, btn);
+	
+	/* Two button mappings takes priority over one button mappings */
+	for (i = 0; i < BIND_COUNT; i++)
+	{
+		if (mappings[i].button2 && BindMapping2_Claims(&mappings[i], btn)) return false;
+	}
+	return bind->button1 == btn;
+}
+
+void InputBind_Load(const struct InputDevice* device) {
 	cc_string name; char nameBuffer[STRING_SIZE + 1];
-	int mapping;
+	const BindMapping* defaults = device->defaultBinds;
+	BindMapping* keybinds = device->currentBinds;
+	BindMapping mapping;
+	cc_string str, part1, part2;
 	int i;
 
 	String_InitArray_NT(name, nameBuffer);
-	for (i = 0; i < KEYBIND_COUNT; i++) {
+	for (i = 0; i < BIND_COUNT; i++) 
+	{
 		name.length = 0;
-		String_Format1(&name, "key-%c", keybindNames[i]);
+		String_Format1(&name, device->bindPrefix, bindNames[i]);
 		name.buffer[name.length] = '\0';
+		
+		if (!Options_UNSAFE_Get(name.buffer, &str)) {
+			keybinds[i] = defaults[i];
+			continue;
+		}
 
-		mapping = Options_GetEnum(name.buffer, KeyBind_Defaults[i], Input_StorageNames, INPUT_COUNT);
-		if (mapping != KEY_ESCAPE) KeyBinds[i] = mapping;
+		String_UNSAFE_Separate(&str, ',', &part1, &part2); 
+		mapping.button1 = Utils_ParseEnum(&part1, defaults[i].button1, Input_StorageNames, INPUT_COUNT);
+		mapping.button2 = Utils_ParseEnum(&part2, defaults[i].button2, Input_StorageNames, INPUT_COUNT);
+		
+		if (mapping.button1 == CCKEY_ESCAPE) keybinds[i] = defaults[i];
+		keybinds[i] = mapping;
 	}
 }
 
-void KeyBind_Set(KeyBind binding, int key) {
+void InputBind_Set(InputBind binding, int btn, const struct InputDevice* device) {
 	cc_string name; char nameBuffer[STRING_SIZE];
 	cc_string value;
 	String_InitArray(name, nameBuffer);
 
-	String_Format1(&name, "key-%c", keybindNames[binding]);
-	value = String_FromReadonly(Input_StorageNames[key]);
+	String_Format1(&name, device->bindPrefix, bindNames[binding]);
+	value = String_FromReadonly(Input_StorageNames[btn]);
 	Options_SetString(&name, &value);
-	KeyBinds[binding] = key;
+	
+	BindMapping_Set(&device->currentBinds[binding], btn, 0);
 }
 
-/* Initialises and loads key bindings from options */
-static void KeyBind_Init(void) {
-	int i;
-	for (i = 0; i < KEYBIND_COUNT; i++) {
-		KeyBinds[i] = KeyBind_Defaults[i];
-	}
-	KeyBind_Load();
+void InputBind_Reset(InputBind binding, const struct InputDevice* device) {
+	cc_string name; char nameBuffer[STRING_SIZE];
+	String_InitArray(name, nameBuffer);
+	
+	String_Format1(&name, device->bindPrefix, bindNames[binding]);
+	Options_SetString(&name, &String_Empty);
+	
+	device->currentBinds[binding] = device->defaultBinds[binding];
 }
 
 
 /*########################################################################################################################*
-*---------------------------------------------------------Hotkeys---------------------------------------------------------*
+*---------------------------------------------------------Gamepad---------------------------------------------------------*
 *#########################################################################################################################*/
-const cc_uint8 Hotkeys_LWJGL[256] = {
-	0, KEY_ESCAPE, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', KEY_MINUS, KEY_EQUALS, KEY_BACKSPACE, KEY_TAB,
-	'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', KEY_LBRACKET, KEY_RBRACKET, KEY_ENTER, KEY_LCTRL, 'A', 'S',
-	'D', 'F', 'G', 'H', 'J', 'K', 'L', KEY_SEMICOLON, KEY_QUOTE, KEY_TILDE, KEY_LSHIFT, KEY_BACKSLASH, 'Z', 'X', 'C', 'V',
-	'B', 'N', 'M', KEY_COMMA, KEY_PERIOD, KEY_SLASH, KEY_RSHIFT, 0, KEY_LALT, KEY_SPACE, KEY_CAPSLOCK, KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5,
-	KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_NUMLOCK, KEY_SCROLLLOCK, KEY_KP7, KEY_KP8, KEY_KP9, KEY_KP_MINUS, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP_PLUS, KEY_KP1,
-	KEY_KP2, KEY_KP3, KEY_KP0, KEY_KP_DECIMAL, 0, 0, 0, KEY_F11, KEY_F12, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, KEY_F13, KEY_F14, KEY_F15, KEY_F16, KEY_F17, KEY_F18, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, KEY_KP_PLUS, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, KEY_KP_ENTER, KEY_RCTRL, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, KEY_KP_DIVIDE, 0, 0, KEY_RALT, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, KEY_PAUSE, 0, KEY_HOME, KEY_UP, KEY_PAGEUP, 0, KEY_LEFT, 0, KEY_RIGHT, 0, KEY_END,
-	KEY_DOWN, KEY_PAGEDOWN, KEY_INSERT, KEY_DELETE, 0, 0, 0, 0, 0, 0, 0, KEY_LWIN, KEY_RWIN, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-struct HotkeyData HotkeysList[HOTKEYS_MAX_COUNT];
-struct StringsBuffer HotkeysText;
+int Gamepad_AxisBehaviour[2]   = { AXIS_BEHAVIOUR_MOVEMENT, AXIS_BEHAVIOUR_CAMERA };
+int Gamepad_AxisSensitivity[2] = { AXIS_SENSI_NORMAL, AXIS_SENSI_NORMAL };
 
-static void Hotkeys_QuickSort(int left, int right) {
-	struct HotkeyData* keys = HotkeysList; struct HotkeyData key;
+static const float axis_sensiFactor[] = { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+struct GamepadDevice Gamepad_Devices[INPUT_MAX_GAMEPADS];
 
-	while (left < right) {
-		int i = left, j = right;
-		cc_uint8 pivot = keys[(i + j) >> 1].mods;
-
-		/* partition the list */
-		while (i <= j) {
-			while (pivot < keys[i].mods) i++;
-			while (pivot > keys[j].mods) j--;
-			QuickSort_Swap_Maybe();
-		}
-		/* recurse into the smaller subset */
-		QuickSort_Recurse(Hotkeys_QuickSort)
-	}
-}
-
-static void Hotkeys_AddNewHotkey(int trigger, cc_uint8 modifiers, const cc_string* text, cc_uint8 flags) {
-	struct HotkeyData hKey;
-	hKey.trigger = trigger;
-	hKey.mods    = modifiers;
-	hKey.textIndex = HotkeysText.count;
-	hKey.flags   = flags;
-
-	if (HotkeysText.count == HOTKEYS_MAX_COUNT) {
-		Chat_AddRaw("&cCannot define more than 256 hotkeys");
-		return;
-	}
-
-	HotkeysList[HotkeysText.count] = hKey;
-	StringsBuffer_Add(&HotkeysText, text);
-	/* sort so that hotkeys with largest modifiers are first */
-	Hotkeys_QuickSort(0, HotkeysText.count - 1);
-}
-
-static void Hotkeys_RemoveText(int index) {
-	 struct HotkeyData* hKey = HotkeysList;
-	 int i;
-
-	for (i = 0; i < HotkeysText.count; i++, hKey++) {
-		if (hKey->textIndex >= index) hKey->textIndex--;
-	}
-	StringsBuffer_Remove(&HotkeysText, index);
-}
-
-
-void Hotkeys_Add(int trigger, cc_uint8 modifiers, const cc_string* text, cc_uint8 flags) {
-	struct HotkeyData* hk = HotkeysList;
-	int i;
-
-	for (i = 0; i < HotkeysText.count; i++, hk++) {		
-		if (hk->trigger != trigger || hk->mods != modifiers) continue;
-		Hotkeys_RemoveText(hk->textIndex);
-
-		hk->flags     = flags;
-		hk->textIndex = HotkeysText.count;
-		StringsBuffer_Add(&HotkeysText, text);
-		return;
-	}
-	Hotkeys_AddNewHotkey(trigger, modifiers, text, flags);
-}
-
-cc_bool Hotkeys_Remove(int trigger, cc_uint8 modifiers) {
-	struct HotkeyData* hk = HotkeysList;
-	int i, j;
-
-	for (i = 0; i < HotkeysText.count; i++, hk++) {
-		if (hk->trigger != trigger || hk->mods != modifiers) continue;
-		Hotkeys_RemoveText(hk->textIndex);
-
-		for (j = i; j < HotkeysText.count; j++) {
-			HotkeysList[j] = HotkeysList[j + 1];
-		}
-		return true;
-	}
-	return false;
-}
-
-int Hotkeys_FindPartial(int key) {
-	struct HotkeyData hk;
-	int i, modifiers = 0;
-
-	if (Key_IsCtrlPressed())  modifiers |= HOTKEY_MOD_CTRL;
-	if (Key_IsShiftPressed()) modifiers |= HOTKEY_MOD_SHIFT;
-	if (Key_IsAltPressed())   modifiers |= HOTKEY_MOD_ALT;
-
-	for (i = 0; i < HotkeysText.count; i++) {
-		hk = HotkeysList[i];
-		/* e.g. if holding Ctrl and Shift, a hotkey with only Ctrl modifiers matches */
-		if ((hk.mods & modifiers) == hk.mods && hk.trigger == key) return i;
-	}
-	return -1;
-}
-
-static const cc_string prefix = String_FromConst("hotkey-");
-static void StoredHotkey_Parse(cc_string* key, cc_string* value) {
-	cc_string strKey, strMods, strMore, strText;
-	int trigger;
-	cc_uint8 modifiers;
-	cc_bool more;
-
-	/* Format is: key&modifiers = more-input&text */
-	key->length -= prefix.length; key->buffer += prefix.length;
+static void Gamepad_Apply(int port, int btn, cc_bool was, int pressed) {
+	struct InputDevice* device = &Gamepad_Devices[port].base;
+	device->mappedIndex = Game_MapState(device->rawIndex);
 	
-	if (!String_UNSAFE_Separate(key,   '&', &strKey,  &strMods)) return;
-	if (!String_UNSAFE_Separate(value, '&', &strMore, &strText)) return;
-	
-	trigger = Utils_ParseEnum(&strKey, KEY_NONE, Input_StorageNames, INPUT_COUNT);
-	if (trigger == KEY_NONE) return; 
-	if (!Convert_ParseUInt8(&strMods, &modifiers)) return;
-	if (!Convert_ParseBool(&strMore,  &more))      return;
-	
-	Hotkeys_Add(trigger, modifiers, &strText, more);
-}
-
-static void StoredHotkeys_LoadAll(void) {
-	cc_string entry, key, value;
-	int i;
-
-	for (i = 0; i < Options.count; i++) {
-		StringsBuffer_UNSAFE_GetRaw(&Options, i, &entry);
-		String_UNSAFE_Separate(&entry, '=', &key, &value);
-
-		if (!String_CaselessStarts(&key, &prefix)) continue;
-		StoredHotkey_Parse(&key, &value);
-	}
-}
-
-void StoredHotkeys_Load(int trigger, cc_uint8 modifiers) {
-	cc_string key, value; char keyBuffer[STRING_SIZE];
-	String_InitArray(key, keyBuffer);
-
-	String_Format2(&key, "hotkey-%c&%b", Input_StorageNames[trigger], &modifiers);
-	key.buffer[key.length] = '\0'; /* TODO: Avoid this null terminator */
-
-	Options_UNSAFE_Get(key.buffer, &value);
-	StoredHotkey_Parse(&key, &value);
-}
-
-void StoredHotkeys_Remove(int trigger, cc_uint8 modifiers) {
-	cc_string key; char keyBuffer[STRING_SIZE];
-	String_InitArray(key, keyBuffer);
-
-	String_Format2(&key, "hotkey-%c&%b", Input_StorageNames[trigger], &modifiers);
-	Options_SetString(&key, NULL);
-}
-
-void StoredHotkeys_Add(int trigger, cc_uint8 modifiers, cc_bool moreInput, const cc_string* text) {
-	cc_string key;   char keyBuffer[STRING_SIZE];
-	cc_string value; char valueBuffer[STRING_SIZE * 2];
-	String_InitArray(key, keyBuffer);
-	String_InitArray(value, valueBuffer);
-
-	String_Format2(&key, "hotkey-%c&%b", Input_StorageNames[trigger], &modifiers);
-	String_Format2(&value, "%t&%s", &moreInput, text);
-	Options_SetString(&key, &value);
-}
-
-
-/*########################################################################################################################*
-*-----------------------------------------------------Mouse helpers-------------------------------------------------------*
-*#########################################################################################################################*/
-static void MouseStateUpdate(int button, cc_bool pressed) {
-	struct Entity* p;
-	/* defer getting the targeted entity, as it's a costly operation */
-	if (input_pickingId == -1) {
-		p = &LocalPlayer_Instance.Base;
-		input_pickingId = Entities_GetClosest(p);
-	}
-
-	input_buttonsDown[button] = pressed;
-	CPE_SendPlayerClick(button, pressed, (EntityID)input_pickingId, &Game_SelectedPos);	
-}
-
-static void MouseStateChanged(int button, cc_bool pressed) {
-	if (!Server.SupportsPlayerClick) return;
-
 	if (pressed) {
-		/* Can send multiple Pressed events */
-		MouseStateUpdate(button, true);
+		Event_RaiseInput(&InputEvents.Down2, btn + GAMEPAD_BEG_BTN, was, device);
 	} else {
-		if (!input_buttonsDown[button]) return;
-		MouseStateUpdate(button, false);
+		Event_RaiseInput(&InputEvents.Up2,   btn + GAMEPAD_BEG_BTN, was, device);
 	}
 }
 
-static void MouseStatePress(int button) {
-	input_lastClick = DateTime_CurrentUTC_MS();
-	input_pickingId = -1;
-	MouseStateChanged(button, true);
-}
+static void Gamepad_Update(int port, float delta) {
+	struct GamepadDevice* pad = &Gamepad_Devices[port];
+	int btn;
 
-static void MouseStateRelease(int button) {
-	input_pickingId = -1;
-	MouseStateChanged(button, false);
-}
+	for (btn = 0; btn < GAMEPAD_BTN_COUNT; btn++)
+	{
+		if (!pad->pressed[btn]) continue;
+		pad->holdtime[btn] += delta;
+		if (pad->holdtime[btn] < 1.0f) continue;
 
-void InputHandler_OnScreensChanged(void) {
-	input_lastClick = DateTime_CurrentUTC_MS();
-	input_pickingId = -1;
-	if (!Gui.InputGrab) return;
-
-	/* If input is grabbed, then the mouse isn't used for picking blocks in world anymore. */
-	/* So release all mouse buttons, since game stops sending PlayerClick during grabbed input */
-	MouseStateChanged(MOUSE_LEFT,   false);
-	MouseStateChanged(MOUSE_RIGHT,  false);
-	MouseStateChanged(MOUSE_MIDDLE, false);
-}
-
-static cc_bool TouchesSolid(BlockID b) { return Blocks.Collide[b] == COLLIDE_SOLID; }
-static cc_bool PushbackPlace(struct AABB* blockBB) {
-	struct Entity* p        = &LocalPlayer_Instance.Base;
-	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
-	Face closestFace;
-	cc_bool insideMap;
-
-	Vec3 pos = p->Position;
-	struct AABB playerBB;
-	struct LocationUpdate update;
-
-	/* Offset position by the closest face */
-	closestFace = Game_SelectedPos.Closest;
-	if (closestFace == FACE_XMAX) {
-		pos.X = blockBB->Max.X + 0.5f;
-	} else if (closestFace == FACE_ZMAX) {
-		pos.Z = blockBB->Max.Z + 0.5f;
-	} else if (closestFace == FACE_XMIN) {
-		pos.X = blockBB->Min.X - 0.5f;
-	} else if (closestFace == FACE_ZMIN) {
-		pos.Z = blockBB->Min.Z - 0.5f;
-	} else if (closestFace == FACE_YMAX) {
-		pos.Y = blockBB->Min.Y + 1 + ENTITY_ADJUSTMENT;
-	} else if (closestFace == FACE_YMIN) {
-		pos.Y = blockBB->Min.Y - p->Size.Y - ENTITY_ADJUSTMENT;
+		/* Held for over a second, trigger a repeated press */
+		pad->holdtime[btn] = 0;
+		Gamepad_Apply(port, btn, true, true);
 	}
-
-	/* Exclude exact map boundaries, otherwise player can get stuck outside map */
-	/* Being vertically above the map is acceptable though */
-	insideMap =
-		pos.X > 0.0f && pos.Y >= 0.0f && pos.Z > 0.0f &&
-		pos.X < World.Width && pos.Z < World.Length;
-	if (!insideMap) return false;
-
-	AABB_Make(&playerBB, &pos, &p->Size);
-	if (!hacks->Noclip && Entity_TouchesAny(&playerBB, TouchesSolid)) {
-		/* Don't put player inside another block */
-		return false;
-	}
-
-	update.flags = LU_HAS_POS | LU_POS_ABSOLUTE_INSTANT;
-	update.pos   = pos;
-	p->VTABLE->SetLocation(p, &update);
-	return true;
 }
 
-static cc_bool IntersectsOthers(Vec3 pos, BlockID block) {
-	struct AABB blockBB, entityBB;
-	struct Entity* e;
-	int id;
+void Gamepad_SetButton(int port, int btn, int pressed) {
+	struct GamepadDevice* pad = &Gamepad_Devices[port];
+	pressed = pressed != 0;
 
-	Vec3_Add(&blockBB.Min, &pos, &Blocks.MinBB[block]);
-	Vec3_Add(&blockBB.Max, &pos, &Blocks.MaxBB[block]);
+	btn -= GAMEPAD_BEG_BTN;
+	/* Repeat down is handled in Gamepad_Update instead */
+	if (pressed == pad->pressed[btn]) return;
+
+	/* Reset hold tracking time */
+	if (pressed && !pad->pressed[btn]) pad->holdtime[btn] = 0;
+	pad->pressed[btn] = pressed;
+
+	Gamepad_Apply(port, btn, false, pressed);
+}
+
+void Gamepad_SetAxis(int port, int axis, float x, float y, float delta) {
+	float scale;
+	int sensi;
+
+	Gamepad_Devices[port].axisX[axis] = x;
+	Gamepad_Devices[port].axisY[axis] = y;
+	if (x == 0 && y == 0) return;
+
+	sensi = Gamepad_AxisSensitivity[axis];
+	scale = delta * 60.0f * axis_sensiFactor[sensi];
+	Event_RaisePadAxis(&ControllerEvents.AxisUpdate, port, axis, x * scale, y * scale);
+}
+
+void Gamepad_Tick(float delta) {
+	int port;
+	Gamepads_Process(delta);
 	
-	for (id = 0; id < ENTITIES_SELF_ID; id++) {
-		e = Entities.List[id];
-		if (!e) continue;
-
-		Entity_GetBounds(e, &entityBB);
-		entityBB.Min.Y += 1.0f / 32.0f; /* when player is exactly standing on top of ground */
-		if (AABB_Intersects(&entityBB, &blockBB)) return true;
-	}
-	return false;
-}
-
-static cc_bool CheckIsFree(BlockID block) {
-	struct Entity* p        = &LocalPlayer_Instance.Base;
-	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
-
-	Vec3 pos, nextPos;
-	struct AABB blockBB, playerBB;
-	struct LocationUpdate update;
-
-	/* Non solid blocks (e.g. water/flowers) can always be placed on players */
-	if (Blocks.Collide[block] != COLLIDE_SOLID) return true;
-
-	IVec3_ToVec3(&pos, &Game_SelectedPos.TranslatedPos);
-	if (IntersectsOthers(pos, block)) return false;
-	
-	nextPos = LocalPlayer_Instance.Base.next.pos;
-	Vec3_Add(&blockBB.Min, &pos, &Blocks.MinBB[block]);
-	Vec3_Add(&blockBB.Max, &pos, &Blocks.MaxBB[block]);
-
-	/* NOTE: Need to also test against next position here, otherwise player can */
-	/* fall through the block at feet as collision is performed against nextPos */
-	Entity_GetBounds(p, &playerBB);
-	playerBB.Min.Y = min(nextPos.Y, playerBB.Min.Y);
-
-	if (hacks->Noclip || !AABB_Intersects(&playerBB, &blockBB)) return true;
-	if (hacks->CanPushbackBlocks && hacks->PushbackPlacing && hacks->Enabled) {
-		return PushbackPlace(&blockBB);
-	}
-
-	playerBB.Min.Y += 0.25f + ENTITY_ADJUSTMENT;
-	if (AABB_Intersects(&playerBB, &blockBB)) return false;
-
-	/* Push player upwards when they are jumping and trying to place a block underneath them */
-	nextPos.Y = pos.Y + Blocks.MaxBB[block].Y + ENTITY_ADJUSTMENT;
-
-	update.flags = LU_HAS_POS | LU_POS_ABSOLUTE_INSTANT;
-	update.pos   = nextPos;
-	p->VTABLE->SetLocation(p, &update);
-	return true;
-}
-
-void InputHandler_DeleteBlock(void) {
-	IVec3 pos;
-	BlockID old;
-	/* always play delete animations, even if we aren't deleting a block */
-	HeldBlockRenderer_ClickAnim(true);
-
-	pos = Game_SelectedPos.pos;
-	if (!Game_SelectedPos.Valid || !World_Contains(pos.X, pos.Y, pos.Z)) return;
-
-	old = World_GetBlock(pos.X, pos.Y, pos.Z);
-	if (Blocks.Draw[old] == DRAW_GAS || !Blocks.CanDelete[old]) return;
-
-	Game_ChangeBlock(pos.X, pos.Y, pos.Z, BLOCK_AIR);
-	Event_RaiseBlock(&UserEvents.BlockChanged, pos, old, BLOCK_AIR);
-}
-
-void InputHandler_PlaceBlock(void) {
-	IVec3 pos;
-	BlockID old, block;
-	pos = Game_SelectedPos.TranslatedPos;
-	if (!Game_SelectedPos.Valid || !World_Contains(pos.X, pos.Y, pos.Z)) return;
-
-	old   = World_GetBlock(pos.X, pos.Y, pos.Z);
-	block = Inventory_SelectedBlock;
-	if (AutoRotate_Enabled) block = AutoRotate_RotateBlock(block);
-
-	if (Game_CanPick(old) || !Blocks.CanPlace[block]) return;
-	/* air-ish blocks can only replace over other air-ish blocks */
-	if (Blocks.Draw[block] == DRAW_GAS && Blocks.Draw[old] != DRAW_GAS) return;
-
-	/* undeletable gas blocks can't be replaced with other blocks */
-	if (Blocks.Collide[old] == COLLIDE_NONE && !Blocks.CanDelete[old]) return;
-
-	if (!CheckIsFree(block)) return;
-
-	Game_ChangeBlock(pos.X, pos.Y, pos.Z, block);
-	Event_RaiseBlock(&UserEvents.BlockChanged, pos, old, block);
-}
-
-void InputHandler_PickBlock(void) {
-	IVec3 pos;
-	BlockID cur;
-	pos = Game_SelectedPos.pos;
-	if (!World_Contains(pos.X, pos.Y, pos.Z)) return;
-
-	cur = World_GetBlock(pos.X, pos.Y, pos.Z);
-	if (Blocks.Draw[cur] == DRAW_GAS) return;
-	if (!(Blocks.CanPlace[cur] || Blocks.CanDelete[cur])) return;
-	Inventory_PickBlock(cur);
-}
-
-void InputHandler_Tick(void) {
-	cc_bool left, middle, right;
-	TimeMS now = DateTime_CurrentUTC_MS();
-	int delta  = (int)(now - input_lastClick);
-
-	if (delta < 250) return; /* 4 times per second */
-	input_lastClick = now;
-	if (Gui.InputGrab) return;
-
-	left   = KeyBind_IsPressed(KEYBIND_DELETE_BLOCK);
-	middle = KeyBind_IsPressed(KEYBIND_PICK_BLOCK);
-	right  = KeyBind_IsPressed(KEYBIND_PLACE_BLOCK);
-	
-#ifdef CC_BUILD_TOUCH
-	if (Input_TouchMode) {
-		left   = (Input_HoldMode == INPUT_MODE_DELETE) && AnyBlockTouches();
-		right  = (Input_HoldMode == INPUT_MODE_PLACE)  && AnyBlockTouches();
-		middle = false;
-	}
-#endif
-
-	if (Server.SupportsPlayerClick) {
-		input_pickingId = -1;
-		MouseStateChanged(MOUSE_LEFT,   left);
-		MouseStateChanged(MOUSE_RIGHT,  right);
-		MouseStateChanged(MOUSE_MIDDLE, middle);
-	}
-
-	if (left) {
-		InputHandler_DeleteBlock();
-	} else if (right) {
-		InputHandler_PlaceBlock();
-	} else if (middle) {
-		InputHandler_PickBlock();
+	for (port = 0; port < INPUT_MAX_GAMEPADS; port++)
+	{
+		Gamepad_Update(port, delta);
 	}
 }
 
+int Gamepad_Connect(long deviceID, const struct BindMapping_* defaults) {
+	int i;
+	for (i = 0; i < INPUT_MAX_GAMEPADS; i++)
+	{
+		if (Gamepad_Devices[i].deviceID == deviceID) return i;
+		if (Gamepad_Devices[i].deviceID != 0) continue;
+		
+		Mem_Copy(&Gamepad_Devices[i].base, &padDevice, sizeof(struct InputDevice));
+		Gamepad_Devices[i].base.rawIndex     = i;
+		Gamepad_Devices[i].base.currentBinds = padBind_Mappings[i];
+		Gamepad_Devices[i].base.defaultBinds = defaults;
+		Gamepad_Devices[i].deviceID          = deviceID;
 
-/*########################################################################################################################*
-*-----------------------------------------------------Input helpers-------------------------------------------------------*
-*#########################################################################################################################*/
-static cc_bool InputHandler_IsShutdown(int key) {
-	if (key == KEY_F4 && Key_IsAltPressed()) return true;
-
-	/* On macOS, Cmd+Q should also end the process */
-#ifdef CC_BUILD_DARWIN
-	return key == 'Q' && Key_IsWinPressed();
-#else
-	return false;
-#endif
-}
-
-static void InputHandler_Toggle(int key, cc_bool* target, const char* enableMsg, const char* disableMsg) {
-	*target = !(*target);
-	if (*target) {
-		Chat_Add2("%c. &ePress &a%c &eto disable.",   enableMsg,  Input_StorageNames[key]);
-	} else {
-		Chat_Add2("%c. &ePress &a%c &eto re-enable.", disableMsg, Input_StorageNames[key]);
+		InputBind_Load(&Gamepad_Devices[i].base);
+		return i;
 	}
-}
 
-cc_bool InputHandler_SetFOV(int fov) {
-	struct HacksComp* h = &LocalPlayer_Instance.Hacks;
-	if (!h->Enabled || !h->CanUseThirdPerson) return false;
-
-	Camera.ZoomFov = fov;
-	Camera_SetFov(fov);
-	return true;
-}
-
-cc_bool Input_HandleMouseWheel(float delta) {
-	struct HacksComp* h;
-	cc_bool hotbar;
-
-	hotbar = Key_IsAltPressed() || Key_IsCtrlPressed() || Key_IsShiftPressed();
-	if (!hotbar && Camera.Active->Zoom(delta))   return true;
-	if (!KeyBind_IsPressed(KEYBIND_ZOOM_SCROLL)) return false;
-
-	h = &LocalPlayer_Instance.Hacks;
-	if (!h->Enabled || !h->CanUseThirdPerson) return false;
-
-	if (input_fovIndex == -1.0f) input_fovIndex = (float)Camera.ZoomFov;
-	input_fovIndex -= delta * 5.0f;
-
-	Math_Clamp(input_fovIndex, 1.0f, Camera.DefaultFov);
-	return InputHandler_SetFOV((int)input_fovIndex);
-}
-
-static void InputHandler_CheckZoomFov(void* obj) {
-	struct HacksComp* h = &LocalPlayer_Instance.Hacks;
-	if (!h->Enabled || !h->CanUseThirdPerson) Camera_SetFov(Camera.DefaultFov);
-}
-
-static cc_bool HandleBlockKey(int key) {
-	if (Gui.InputGrab) return false;
-
-	if (key == KeyBinds[KEYBIND_DELETE_BLOCK]) {
-		MouseStatePress(MOUSE_LEFT);
-		InputHandler_DeleteBlock();
-	} else if (key == KeyBinds[KEYBIND_PLACE_BLOCK]) {
-		MouseStatePress(MOUSE_RIGHT);
-		InputHandler_PlaceBlock();
-	} else if (key == KeyBinds[KEYBIND_PICK_BLOCK]) {
-		MouseStatePress(MOUSE_MIDDLE);
-		InputHandler_PickBlock();
-	} else {
-		return false;
-	}
-	return true;
-}
-
-static cc_bool HandleNonClassicKey(int key) {
-	if (key == KeyBinds[KEYBIND_HIDE_GUI]) {
-		Game_HideGui = !Game_HideGui;
-	} else if (key == KeyBinds[KEYBIND_SMOOTH_CAMERA]) {
-		InputHandler_Toggle(key, &Camera.Smooth,
-			"  &eSmooth camera is &aenabled",
-			"  &eSmooth camera is &cdisabled");
-	} else if (key == KeyBinds[KEYBIND_AXIS_LINES]) {
-		InputHandler_Toggle(key, &AxisLinesRenderer_Enabled,
-			"  &eAxis lines (&4X&e, &2Y&e, &1Z&e) now show",
-			"  &eAxis lines no longer show");
-	} else if (key == KeyBinds[KEYBIND_AUTOROTATE]) {
-		InputHandler_Toggle(key, &AutoRotate_Enabled,
-			"  &eAuto rotate is &aenabled",
-			"  &eAuto rotate is &cdisabled");
-	} else if (key == KeyBinds[KEYBIND_THIRD_PERSON]) {
-		Camera_CycleActive();
-	} else if (key == KeyBinds[KEYBIND_DROP_BLOCK]) {
-		if (Inventory_CheckChangeSelected() && Inventory_SelectedBlock != BLOCK_AIR) {
-			/* Don't assign SelectedIndex directly, because we don't want held block
-			switching positions if they already have air in their inventory hotbar. */
-			Inventory_Set(Inventory.SelectedIndex, BLOCK_AIR);
-			Event_RaiseVoid(&UserEvents.HeldBlockChanged);
-		}
-	} else if (key == KeyBinds[KEYBIND_IDOVERLAY]) {
-		TexIdsOverlay_Show();
-	} else if (key == KeyBinds[KEYBIND_BREAK_LIQUIDS]) {
-		InputHandler_Toggle(key, &Game_BreakableLiquids,
-			"  &eBreakable liquids is &aenabled",
-			"  &eBreakable liquids is &cdisabled");
-	} else {
-		return false;
-	}
-	return true;
-}
-
-static cc_bool HandleCoreKey(int key) {
-	if (key == KeyBinds[KEYBIND_HIDE_FPS]) {
-		Gui.ShowFPS = !Gui.ShowFPS;
-	} else if (key == KeyBinds[KEYBIND_FULLSCREEN]) {
-		Game_ToggleFullscreen();
-	} else if (key == KeyBinds[KEYBIND_FOG]) {
-		Game_CycleViewDistance();
-	} else if (key == KEY_F5 && Game_ClassicMode) {
-		int weather = Env.Weather == WEATHER_SUNNY ? WEATHER_RAINY : WEATHER_SUNNY;
-		Env_SetWeather(weather);
-	} else {
-		if (Game_ClassicMode) return false;
-		return HandleNonClassicKey(key);
-	}
-	return true;
-}
-
-static void HandleHotkeyDown(int key) {
-	struct HotkeyData* hkey;
-	cc_string text;
-	int i = Hotkeys_FindPartial(key);
-
-	if (i == -1) return;
-	hkey = &HotkeysList[i];
-	text = StringsBuffer_UNSAFE_Get(&HotkeysText, hkey->textIndex);
-
-	if (!(hkey->flags & HOTKEY_FLAG_STAYS_OPEN)) {
-		Chat_Send(&text, false);
-	} else if (!Gui.InputGrab) {
-		ChatScreen_OpenInput(&text);
-	}
-}
-
-static cc_bool HandleLocalPlayerKey(int key) {
-	if (key == KeyBinds[KEYBIND_RESPAWN]) {
-		return LocalPlayer_HandleRespawn();
-	} else if (key == KeyBinds[KEYBIND_SET_SPAWN]) {
-		return LocalPlayer_HandleSetSpawn();
-	} else if (key == KeyBinds[KEYBIND_FLY]) {
-		return LocalPlayer_HandleFly();
-	} else if (key == KeyBinds[KEYBIND_NOCLIP]) {
-		return LocalPlayer_HandleNoclip();
-	} else if (key == KeyBinds[KEYBIND_JUMP]) {
-		return LocalPlayer_HandleJump();
-	}
-	return false;
+	Logger_Abort("Not enough controllers");
+	return 0;
 }
 
 
 /*########################################################################################################################*
 *-----------------------------------------------------Base handlers-------------------------------------------------------*
 *#########################################################################################################################*/
-static void OnMouseWheel(void* obj, float delta) {
-	struct Screen* s;
-	int i;
-	
-	for (i = 0; i < Gui.ScreensCount; i++) {
-		s = Gui_Screens[i];
-		s->dirty = true;
-		if (s->VTABLE->HandlesMouseScroll(s, delta)) return;
-	}
-}
+static void OnFocusChanged(void* obj) { if (!Window_Main.Focused) Input_Clear(); }
 
-static void OnPointerMove(void* obj, int idx) {
-	struct Screen* s;
-	int i, x = Pointers[idx].x, y = Pointers[idx].y;
-
-	for (i = 0; i < Gui.ScreensCount; i++) {
-		s = Gui_Screens[i];
-		s->dirty = true;
-		if (s->VTABLE->HandlesPointerMove(s, 1 << idx, x, y)) return;
-	}
-}
-
-static void OnPointerDown(void* obj, int idx) {
-	struct Screen* s;
-	int i, x, y, mask;
-#ifdef CC_BUILD_TOUCH
-	if (Input_TouchMode && !(touches[idx].type & TOUCH_TYPE_GUI)) return;
-#endif
-	x = Pointers[idx].x; y = Pointers[idx].y;
-
-	for (i = 0; i < Gui.ScreensCount; i++) {
-		s = Gui_Screens[i];
-		s->dirty = true;
-		mask = s->VTABLE->HandlesPointerDown(s, 1 << idx, x, y);
-
-#ifdef CC_BUILD_TOUCH
-		if (mask) {
-			/* Using &= mask instead of = mask is to handle one specific case */
-			/*  - when clicking 'Quit game' in android version, it will call  */
-			/*  Game_Free, which will in turn call InputComponent.Free.       */
-			/* That resets the type of all touches to 0 - however, since it is */
-			/*  called DURING HandlesPointerDown, using = mask here would undo */
-			/*  the resetting of type to 0 for one of the touches states,      */
-			/*  causing problems later with Input_AddTouch as it will assume that */
-			/*  the aforementioned touches state is wrongly still in use */
-			touches[idx].type &= mask; return;
-		}
-#else
-		if (mask) return;
-#endif
-	}
-}
-
-static void OnPointerUp(void* obj, int idx) {
-	struct Screen* s;
-	int i, x, y;
-#ifdef CC_BUILD_TOUCH
-	CheckBlockTap(idx);
-	if (Input_TouchMode && !(touches[idx].type & TOUCH_TYPE_GUI)) return;
-#endif
-	x = Pointers[idx].x; y = Pointers[idx].y;
-
-	for (i = 0; i < Gui.ScreensCount; i++) {
-		s = Gui_Screens[i];
-		s->dirty = true;
-		s->VTABLE->OnPointerUp(s, 1 << idx, x, y);
-	}
-}
-
-static void OnInputDown(void* obj, int key, cc_bool was) {
-	struct Screen* s;
-	int i;
-
-#ifndef CC_BUILD_WEB
-	if (key == KEY_ESCAPE && (s = Gui_GetClosable())) {
-		/* Don't want holding down escape to go in and out of pause menu */
-		if (!was) Gui_Remove(s);
-		return;
-	}
-#endif
-
-	if (InputHandler_IsShutdown(key)) {
-		/* TODO: Do we need a separate exit function in Game class? */
-		Window_Close(); return;
-	} else if (key == KeyBinds[KEYBIND_SCREENSHOT] && !was) {
-		Game_ScreenshotRequested = true; return;
-	}
-	
-	for (i = 0; i < Gui.ScreensCount; i++) {
-		s = Gui_Screens[i];
-		s->dirty = true;
-		if (s->VTABLE->HandlesInputDown(s, key)) return;
-	}
-
-	if ((key == KEY_ESCAPE || key == KEY_PAUSE) && !Gui.InputGrab) {
-#ifdef CC_BUILD_WEB
-		/* Can't do this in KeyUp, because pressing escape without having */
-		/* explicitly disabled mouse lock means a KeyUp event isn't sent. */
-		/* But switching to pause screen disables mouse lock, causing a KeyUp */
-		/* event to be sent, triggering the active->closable case which immediately */
-		/* closes the pause screen. Hence why the next KeyUp must be supressed. */
-		suppressEscape = true;
-#endif
-		Gui_ShowPauseMenu(); return;
-	}
-
-	/* These should not be triggered multiple times when holding down */
-	if (was) return;
-	if (HandleBlockKey(key)) {
-	} else if (HandleCoreKey(key)) {
-	} else if (HandleLocalPlayerKey(key)) {
-	} else { HandleHotkeyDown(key); }
-}
-
-static void OnInputUp(void* obj, int key) {
-	struct Screen* s;
-	int i;
-
-	if (key == KeyBinds[KEYBIND_ZOOM_SCROLL]) Camera_SetFov(Camera.DefaultFov);
-#ifdef CC_BUILD_WEB
-	/* When closing menus (which reacquires mouse focus) in key down, */
-	/* this still leaves the cursor visible. But if this is instead */
-	/* done in key up, the cursor disappears as expected. */
-	if (key == KEY_ESCAPE && (s = Gui_GetClosable())) {
-		if (suppressEscape) { suppressEscape = false; return; }
-		Gui_Remove(s); return;
-	}
-#endif
-
-	for (i = 0; i < Gui.ScreensCount; i++) {
-		s = Gui_Screens[i];
-		s->dirty = true;
-		s->VTABLE->OnInputUp(s, key);
-	}
-
-	if (Gui.InputGrab) return;
-	if (key == KeyBinds[KEYBIND_DELETE_BLOCK]) MouseStateRelease(MOUSE_LEFT);
-	if (key == KeyBinds[KEYBIND_PLACE_BLOCK])  MouseStateRelease(MOUSE_RIGHT);
-	if (key == KeyBinds[KEYBIND_PICK_BLOCK])   MouseStateRelease(MOUSE_MIDDLE);
-}
-
-static void OnFocusChanged(void* obj) { if (!WindowInfo.Focused) Input_Clear(); }
 static void OnInit(void) {
-	Event_Register_(&PointerEvents.Moved, NULL, OnPointerMove);
-	Event_Register_(&PointerEvents.Down,  NULL, OnPointerDown);
-	Event_Register_(&PointerEvents.Up,    NULL, OnPointerUp);
-	Event_Register_(&InputEvents.Down,    NULL, OnInputDown);
-	Event_Register_(&InputEvents.Up,      NULL, OnInputUp);
-	Event_Register_(&InputEvents.Wheel,   NULL, OnMouseWheel);
-
-	Event_Register_(&WindowEvents.FocusChanged,   NULL, OnFocusChanged);
-	Event_Register_(&UserEvents.HackPermsChanged, NULL, InputHandler_CheckZoomFov);
-	KeyBind_Init();
-	StoredHotkeys_LoadAll();
+	Event_Register_(&WindowEvents.FocusChanged, NULL, OnFocusChanged);
 	/* Fix issue with Android where if you double click in server list to join, a touch */
 	/*  pointer is stuck down when the game loads (so you instantly start deleting blocks) */
 	ClearTouches();
+	
+	InputBind_Load(&NormDevice);
 }
 
 static void OnFree(void) {
 	ClearTouches();
-	HotkeysText.count = 0;
 }
 
 struct IGameComponent Input_Component = {

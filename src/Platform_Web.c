@@ -37,12 +37,17 @@ const cc_result ReturnCode_SocketInProgess  = _EINPROGRESS;
 const cc_result ReturnCode_SocketWouldBlock = _EAGAIN;
 const cc_result ReturnCode_DirectoryExists  = _EEXIST;
 
+const char* Platform_AppNameSuffix = "";
+cc_bool Platform_ReadonlyFilesystem;
+cc_bool Platform_SingleProcess;
+
 
 /*########################################################################################################################*
 *---------------------------------------------------------Memory----------------------------------------------------------*
 *#########################################################################################################################*/
-void Mem_Set(void*  dst, cc_uint8 value,  cc_uint32 numBytes) { memset(dst, value, numBytes); }
-void Mem_Copy(void* dst, const void* src, cc_uint32 numBytes) { memcpy(dst, src,   numBytes); }
+void* Mem_Set(void*  dst, cc_uint8 value,  cc_uint32 numBytes) { return memset( dst, value, numBytes); }
+void* Mem_Copy(void* dst, const void* src, cc_uint32 numBytes) { return memcpy( dst, src,   numBytes); }
+void* Mem_Move(void* dst, const void* src, cc_uint32 numBytes) { return memmove(dst, src,   numBytes); }
 
 void* Mem_TryAlloc(cc_uint32 numElems, cc_uint32 elemsSize) {
 	cc_uint32 size = CalcMemSize(numElems, elemsSize);
@@ -71,16 +76,21 @@ cc_uint64 Stopwatch_ElapsedMicroseconds(cc_uint64 beg, cc_uint64 end) {
 	return end - beg;
 }
 
+cc_uint64 Stopwatch_Measure(void) {
+	/* time is a milliseconds double */
+	/*  convert to microseconds */
+	return (cc_uint64)(emscripten_get_now() * 1000);
+}
+
 extern void interop_Log(const char* msg, int len);
 void Platform_Log(const char* msg, int len) {
 	interop_Log(msg, len);
 }
 
-#define UnixTime_TotalMS(time) ((cc_uint64)time.tv_sec * 1000 + UNIX_EPOCH + (time.tv_usec / 1000))
-TimeMS DateTime_CurrentUTC_MS(void) {
+TimeMS DateTime_CurrentUTC(void) {
 	struct timeval cur;
 	gettimeofday(&cur, NULL);
-	return UnixTime_TotalMS(cur);
+	return (cc_uint64)cur.tv_sec + UNIX_EPOCH_SECONDS;
 }
 
 extern void interop_GetLocalTime(struct DateTime* t);
@@ -88,29 +98,26 @@ void DateTime_CurrentLocal(struct DateTime* t) {
 	interop_GetLocalTime(t);
 }
 
-cc_uint64 Stopwatch_Measure(void) {
-	/* time is a milliseconds double */
-	/*  convert to microseconds */
-	return (cc_uint64)(emscripten_get_now() * 1000);
-}
-
 
 /*########################################################################################################################*
 *-----------------------------------------------------Directory/File------------------------------------------------------*
 *#########################################################################################################################*/
+void Platform_EncodePath(cc_filepath* dst, const cc_string* path) {
+	char* str = dst->buffer;
+	String_EncodeUtf8(str, path);
+}
+
 void Directory_GetCachePath(cc_string* path) { }
 
 extern void interop_InitFilesystem(void);
-cc_result Directory_Create(const cc_string* path) {
+cc_result Directory_Create(const cc_filepath* path) {
 	/* Web filesystem doesn't need directories */
 	return 0;
 }
 
 extern int interop_FileExists(const char* path);
-int File_Exists(const cc_string* path) {
-	char str[NATIVE_STR_LEN];
-	String_EncodeUtf8(str, path);
-	return interop_FileExists(str);
+int File_Exists(const cc_filepath* path) {
+	return interop_FileExists(path->buffer);
 }
 
 static void* enum_obj;
@@ -120,26 +127,23 @@ EMSCRIPTEN_KEEPALIVE void Directory_IterCallback(const char* src) {
 
 	String_InitArray(path, pathBuffer);
 	String_AppendUtf8(&path, src, String_Length(src));
-	enum_callback(&path, enum_obj);
+	enum_callback(&path, enum_obj, false);
 }
 
 extern int interop_DirectoryIter(const char* path);
 cc_result Directory_Enum(const cc_string* path, void* obj, Directory_EnumCallback callback) {
-	char str[NATIVE_STR_LEN];
-	String_EncodeUtf8(str, path);
+	cc_filepath str;
+	Platform_EncodePath(&str, path);
 
 	enum_obj      = obj;
 	enum_callback = callback;
 	/* returned result is negative for error */
-	return -interop_DirectoryIter(str);
+	return -interop_DirectoryIter(str.buffer);
 }
 
 extern int interop_FileCreate(const char* path, int mode);
-static cc_result File_Do(cc_file* file, const cc_string* path, int mode) {
-	char str[NATIVE_STR_LEN];
-	int res;
-	String_EncodeUtf8(str, path);
-	res = interop_FileCreate(str, mode);
+static cc_result File_Do(cc_file* file, const char* path, int mode) {
+	int res = interop_FileCreate(path, mode);
 
 	/* returned result is negative for error */
 	if (res >= 0) {
@@ -149,14 +153,14 @@ static cc_result File_Do(cc_file* file, const cc_string* path, int mode) {
 	}
 }
 
-cc_result File_Open(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDONLY);
+cc_result File_Open(cc_file* file, const cc_filepath* path) {
+	return File_Do(file, path->buffer, O_RDONLY);
 }
-cc_result File_Create(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDWR | O_CREAT | O_TRUNC);
+cc_result File_Create(cc_file* file, const cc_filepath* path) {
+	return File_Do(file, path->buffer, O_RDWR | O_CREAT | O_TRUNC);
 }
-cc_result File_OpenOrCreate(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDWR | O_CREAT);
+cc_result File_OpenOrCreate(cc_file* file, const cc_filepath* path) {
+	return File_Do(file, path->buffer, O_RDWR | O_CREAT);
 }
 
 extern int interop_FileRead(int fd, void* data, int count);
@@ -225,17 +229,13 @@ cc_result File_Length(cc_file file, cc_uint32* len) {
 *#########################################################################################################################*/
 /* No real threading support with emscripten backend */
 void  Thread_Sleep(cc_uint32 milliseconds) { }
-void* Thread_Create(Thread_StartFunc func) { return NULL; }
-void  Thread_Start2(void* handle, Thread_StartFunc func) { func(); }
-void  Thread_Detach(void* handle) { }
-void  Thread_Join(void* handle) { }
 
-void* Mutex_Create(void) { return NULL; }
+void* Mutex_Create(const char* name) { return NULL; }
 void  Mutex_Free(void* handle) { }
 void  Mutex_Lock(void* handle) { }
 void  Mutex_Unlock(void* handle) { }
 
-void* Waitable_Create(void) { return NULL; }
+void* Waitable_Create(const char* name) { return NULL; }
 void  Waitable_Free(void* handle) { }
 void  Waitable_Signal(void* handle) { }
 void  Waitable_Wait(void* handle) { }
@@ -252,18 +252,29 @@ void Platform_LoadSysFonts(void) { }
 *---------------------------------------------------------Socket----------------------------------------------------------*
 *#########################################################################################################################*/
 extern void interop_InitSockets(void);
-int Socket_ValidAddress(const cc_string* address) { return true; }
+
+cc_result Socket_ParseAddress(const cc_string* address, int port, cc_sockaddr* addrs, int* numValidAddrs) {
+	int len = String_EncodeUtf8(addrs[0].data, address);
+	/* TODO can this ever happen */
+	if (len >= CC_SOCKETADDR_MAXSIZE) Logger_Abort("Overrun in Socket_ParseAddress");
+
+	addrs[0].size  = port;
+	*numValidAddrs = 1;
+	return 0;
+}
 
 extern int interop_SocketCreate(void);
-extern int interop_SocketConnect(int sock, const char* addr, int port);
-cc_result Socket_Connect(cc_socket* s, const cc_string* address, int port) {
-	char addr[NATIVE_STR_LEN];
-	int res;
-	String_EncodeUtf8(addr, address);
+extern int interop_SocketConnect(int sock, const cc_uint8* host, int port);
 
-	*s  = interop_SocketCreate();
+cc_result Socket_Create(cc_socket* s, cc_sockaddr* addr, cc_bool nonblocking) {
+	*s = interop_SocketCreate();
+	return 0;
+}
+
+cc_result Socket_Connect(cc_socket s, cc_sockaddr* addr) {
+	/* size is used to store port number instead */
 	/* returned result is negative for error */
-	res = -interop_SocketConnect(*s, addr, port);
+	int res = -interop_SocketConnect(s, addr->data, addr->size);
 
 	/* error returned when invalid address provided */
 	if (res == _EHOSTUNREACH) return ERR_INVALID_ARGUMENT;
@@ -320,9 +331,11 @@ cc_result Socket_CheckWritable(cc_socket s, cc_bool* writable) {
 /*########################################################################################################################*
 *-----------------------------------------------------Process/Module------------------------------------------------------*
 *#########################################################################################################################*/
+cc_bool Process_OpenSupported = true;
+
 void Process_Exit(cc_result code) {
 	/* 'Window' (i.e. the web canvas) isn't implicitly closed when process is exited */
-	if (code) Window_Close();
+	if (code) Window_RequestClose();
 	/* game normally calls exit with code = 0 due to async IndexedDB loading */
 	if (code) exit(code);
 }
@@ -399,7 +412,7 @@ static char** _argv;
 
 extern void interop_FS_Init(void);
 extern void interop_DirectorySetWorking(const char* path);
-extern void interop_AsyncDownloadTexturePack(const char* path, const char* url);
+extern void interop_AsyncDownloadTexturePack(const char* path);
 
 int main(int argc, char** argv) {
 	_argc = argc; _argv = argv;
@@ -411,7 +424,7 @@ int main(int argc, char** argv) {
 	/*        > web_main (game actually starts) */
 	interop_FS_Init();
 	interop_DirectorySetWorking("/classicube");
-	interop_AsyncDownloadTexturePack("texpacks/default.zip", "/static/default.zip");
+	interop_AsyncDownloadTexturePack("texpacks/default.zip");
 }
 
 extern void interop_LoadIndexedDB(void);

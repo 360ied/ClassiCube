@@ -2,9 +2,11 @@
 #define CC_STREAM_H
 #include "Constants.h"
 #include "Platform.h"
+CC_BEGIN_HEADER
+
 /* Defines an abstract way of reading and writing data in a streaming manner.
    Also provides common helper methods for reading/writing data to/from streams.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 struct Stream;
@@ -29,26 +31,30 @@ struct Stream {
 	cc_result (*Close)(struct Stream* s);
 	
 	union {
-		cc_file File;
-		void* Inflate;
-		struct { cc_uint8* Cur; cc_uint32 Left, Length; cc_uint8* Base; } Mem;
-		struct { struct Stream* Source; cc_uint32 Left, Length; } Portion;
-		struct { cc_uint8* Cur; cc_uint32 Left, Length; cc_uint8* Base; struct Stream* Source; cc_uint32 End; } Buffered;
-		struct { struct Stream* Source; cc_uint32 CRC32; } CRC32;
-	} Meta;
+		cc_file file;
+		void* inflate;
+		struct { cc_uint8* cur; cc_uint32 left, length; cc_uint8* base; } mem;
+		struct { struct Stream* source; cc_uint32 left, length; } portion;
+		struct { cc_uint8* cur; cc_uint32 left, length; cc_uint8* base; struct Stream* source; cc_uint32 end; } buffered;
+		struct { struct Stream* source; cc_uint32 crc32; } crc32;
+	} meta;
 };
 
 /* Attempts to fully read up to count bytes from the stream. */
-CC_API cc_result Stream_Read(struct Stream* s, cc_uint8* buffer, cc_uint32 count);
+CC_API  cc_result Stream_Read(      struct Stream* s, cc_uint8* buffer, cc_uint32 count);
+typedef cc_result (*FP_Stream_Read)(struct Stream* s, cc_uint8* buffer, cc_uint32 count);
 /* Attempts to fully write up to count bytes from the stream. */
-CC_API cc_result Stream_Write(struct Stream* s, const cc_uint8* buffer, cc_uint32 count);
+CC_API  cc_result Stream_Write(      struct Stream* s, const cc_uint8* buffer, cc_uint32 count);
+typedef cc_result (*FP_Stream_Write)(struct Stream* s, const cc_uint8* buffer, cc_uint32 count);
 /* Initialises default function pointers for a stream. (all read, write, seeks return an error) */
 void Stream_Init(struct Stream* s);
 
 /* Wrapper for File_Open() then Stream_FromFile() */
-CC_API cc_result Stream_OpenFile(struct Stream* s, const cc_string* path);
+CC_API  cc_result Stream_OpenFile(      struct Stream* s, const cc_string* path);
+typedef cc_result (*FP_Stream_OpenFile)(struct Stream* s, const cc_string* path);
 /* Wrapper for File_Create() then Stream_FromFile() */
-CC_API cc_result Stream_CreateFile(struct Stream* s, const cc_string* path);
+CC_API  cc_result Stream_CreateFile(      struct Stream* s, const cc_string* path);
+typedef cc_result (*FP_Stream_CreateFile)(struct Stream* s, const cc_string* path);
 /* Wrapper for File_OpenOrCreate, then File_Seek(END), then Stream_FromFile() */
 cc_result Stream_AppendFile(struct Stream* s, const cc_string* path);
 /* Creates or overwrites a file, setting the contents to the given data. */
@@ -94,4 +100,6 @@ cc_result Stream_ReadU32_BE(struct Stream* s, cc_uint32* value);
 CC_API cc_result Stream_ReadLine(struct Stream* s, cc_string* text);
 /* Writes a line of UTF8 encoded text to the stream. */
 CC_API cc_result Stream_WriteLine(struct Stream* s, cc_string* text);
+
+CC_END_HEADER
 #endif

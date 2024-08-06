@@ -1,13 +1,16 @@
 #ifndef CC_CAMERA_H
 #define CC_CAMERA_H
 #include "Vectors.h"
+CC_BEGIN_HEADER
+
 /*
 Represents a camera, may be first or third person
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct RayTracer;
 struct Camera;
 struct IGameComponent;
+struct LocalPlayer;
 extern struct IGameComponent Camera_Component;
 
 /* Shared data for cameras. */
@@ -54,9 +57,9 @@ struct Camera {
 
 	/* Called to update the camera's state. */
 	/* Typically, this is used to adjust yaw/pitch based on accumulated mouse movement. */
-	void (*UpdateMouse)(double delta);
+	void (*UpdateMouse)(struct LocalPlayer* p, float delta);
 	/* Called when mouse/pointer has moved. */
-	void (*OnRawMovement)(float deltaX, float deltaY);
+	void (*OnRawMovement)(float deltaX, float deltaY, int deviceIndex);
 	/* Called when user closes all menus, and is interacting with camera again. */
 	void (*AcquireFocus)(void);
 	/* Called when user is no longer interacting with camera. (e.g. opened menu) */
@@ -80,4 +83,7 @@ CC_API void Camera_Register(struct Camera* camera);
 void Camera_CheckFocus(void);
 void Camera_UpdateProjection(void);
 void Camera_SetFov(int fov);
+void Camera_KeyLookUpdate(float delta);
+
+CC_END_HEADER
 #endif

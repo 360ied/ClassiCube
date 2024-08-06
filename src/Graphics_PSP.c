@@ -11,7 +11,6 @@
 #include <pspdebug.h>
 #include <pspctrl.h>
 #include <pspgu.h>
-#include <pspgum.h>
 
 #define BUFFER_WIDTH  512
 #define SCREEN_WIDTH  480
@@ -20,11 +19,11 @@
 #define FB_SIZE (BUFFER_WIDTH * SCREEN_HEIGHT * 4)
 static unsigned int __attribute__((aligned(16))) list[262144];
 
+#define GE_CMD_TEXTUREMAPENABLE		0x1E
 
 /*########################################################################################################################*
 *---------------------------------------------------------General---------------------------------------------------------*
 *#########################################################################################################################*/
-static cc_uint16 __attribute__((aligned(16))) gfx_indices[GFX_MAX_INDICES];
 static int formatFields[] = {
 	GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 	GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D
@@ -35,7 +34,7 @@ static void guInit(void) {
 	void* framebuffer0 = (void*)0;
 	void* framebuffer1 = (void*)FB_SIZE;
 	void* depthbuffer  = (void*)(FB_SIZE + FB_SIZE);
-	gumLoadIdentity(&identity);
+	Mem_Copy(&identity, &Matrix_Identity, sizeof(ScePspFMatrix4));
 	
 	sceGuInit();
 	sceGuStart(GU_DIRECT, list);
@@ -46,7 +45,7 @@ static void guInit(void) {
 	sceGuOffset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
 	sceGuViewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
 	sceGuDepthRange(65535,0);
-	sceGuFrontFace(GU_CW);
+	sceGuFrontFace(GU_CCW);
 	sceGuShadeModel(GU_SMOOTH);
 	sceGuDisable(GU_TEXTURE_2D);
 	
@@ -62,8 +61,7 @@ static void guInit(void) {
 	sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 	sceGuDisable(GU_SCISSOR_TEST);
 	
-	
-    //sceGuDisable(GU_CLIP_PLANES);
+	sceGuEnable(GU_CLIP_PLANES); // TODO: swap near/far instead of this?
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	
 	sceGuFinish();
@@ -74,11 +72,23 @@ static void guInit(void) {
 
 static GfxResourceID white_square;
 void Gfx_Create(void) {
+	if (!Gfx.Created) guInit();
+	
 	Gfx.MaxTexWidth  = 512;
 	Gfx.MaxTexHeight = 512;
 	Gfx.Created      = true;
-	MakeIndices(gfx_indices, GFX_MAX_INDICES);
-	guInit();
+	gfx_vsync        = true;
+	
+	Gfx_RestoreState();
+}
+
+void Gfx_Free(void) { 
+	Gfx_FreeState();
+}
+
+cc_bool Gfx_TryRestoreContext(void) { return true; }
+
+void Gfx_RestoreState(void) {
 	InitDefaultResources();
 	
 	// 1x1 dummy white texture
@@ -88,14 +98,11 @@ void Gfx_Create(void) {
 	white_square = Gfx_CreateTexture(&bmp, 0, false);
 }
 
-void Gfx_Free(void) { 
+void Gfx_FreeState(void) {
 	FreeDefaultResources(); 
 	Gfx_DeleteTexture(&white_square);
 }
 
-cc_bool Gfx_TryRestoreContext(void) { return true; }
-void Gfx_RestoreState(void) { }
-void Gfx_FreeState(void) { }
 #define GU_Toggle(cap) if (enabled) { sceGuEnable(cap); } else { sceGuDisable(cap); }
 
 /*########################################################################################################################*
@@ -104,23 +111,26 @@ void Gfx_FreeState(void) { }
 typedef struct CCTexture_ {
 	cc_uint32 width, height;
 	cc_uint32 pad1, pad2; // data must be aligned to 16 bytes
-	cc_uint32 pixels[];
+	BitmapCol pixels[];
 } CCTexture;
 
-GfxResourceID Gfx_CreateTexture(struct Bitmap* bmp, cc_uint8 flags, cc_bool mipmaps) {
+static GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags, cc_bool mipmaps) {
 	int size = bmp->width * bmp->height * 4;
 	CCTexture* tex = (CCTexture*)memalign(16, 16 + size);
 	
 	tex->width  = bmp->width;
 	tex->height = bmp->height;
-	Mem_Copy(tex->pixels, bmp->scan0, size);
+	CopyTextureData(tex->pixels, bmp->width * BITMAPCOLOR_SIZE,
+					bmp, rowWidth * BITMAPCOLOR_SIZE);
 	return tex;
 }
 
 void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, int rowWidth, cc_bool mipmaps) {
 	CCTexture* tex = (CCTexture*)texId;
-	cc_uint32* dst = (tex->pixels + x) + y * tex->width;
-	CopyTextureData(dst, tex->width * 4, part, rowWidth << 2);
+	BitmapCol* dst = (tex->pixels + x) + y * tex->width;
+
+	CopyTextureData(dst, tex->width * BITMAPCOLOR_SIZE,
+					part, rowWidth  * BITMAPCOLOR_SIZE);
 	// TODO: Do line by line and only invalidate the actually changed parts of lines?
 	sceKernelDcacheWritebackInvalidateRange(dst, (tex->width * part->height) * 4);
 }
@@ -133,10 +143,6 @@ void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, i
 		Mem_Copy(dst + (y + yy) * tex->width, part->scan0 + yy * rowWidth, part->width * 4);
 	}
 }*/
-
-void Gfx_UpdateTexturePart(GfxResourceID texId, int x, int y, struct Bitmap* part, cc_bool mipmaps) {
-	Gfx_UpdateTexture(texId, x, y, part, part->width, mipmaps);
-}
 
 void Gfx_DeleteTexture(GfxResourceID* texId) {
 	GfxResourceID data = *texId;
@@ -160,17 +166,17 @@ void Gfx_BindTexture(GfxResourceID texId) {
 *-----------------------------------------------------State management----------------------------------------------------*
 *#########################################################################################################################*/
 static PackedCol gfx_clearColor;
-void Gfx_SetFaceCulling(cc_bool enabled)   { /*GU_Toggle(GU_CULL_FACE); */ } // TODO: Fix? GU_CCW instead??
-void Gfx_SetAlphaBlending(cc_bool enabled) { GU_Toggle(GU_BLEND); }
+void Gfx_SetFaceCulling(cc_bool enabled)   { GU_Toggle(GU_CULL_FACE); }
+static void SetAlphaBlend(cc_bool enabled) { GU_Toggle(GU_BLEND); }
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
 
-void Gfx_ClearCol(PackedCol color) {
+void Gfx_ClearColor(PackedCol color) {
 	if (color == gfx_clearColor) return;
 	sceGuClearColor(color);
 	gfx_clearColor = color;
 }
 
-void Gfx_SetColWriteMask(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
+static void SetColorWrite(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
 	unsigned int mask = 0xffffffff;
 	if (r) mask &= 0xffffff00;
 	if (g) mask &= 0xffff00ff;
@@ -194,19 +200,19 @@ void Gfx_CalcOrthoMatrix(struct Matrix* matrix, float width, float height, float
 	// NOTE: Shared with OpenGL. might be wrong to do that though?
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  2.0f / width;
-	matrix->row2.Y = -2.0f / height;
-	matrix->row3.Z = -2.0f / (zFar - zNear);
+	matrix->row1.x =  2.0f / width;
+	matrix->row2.y = -2.0f / height;
+	matrix->row3.z = -2.0f / (zFar - zNear);
 
-	matrix->row4.X = -1.0f;
-	matrix->row4.Y =  1.0f;
-	matrix->row4.Z = -(zFar + zNear) / (zFar - zNear);
+	matrix->row4.x = -1.0f;
+	matrix->row4.y =  1.0f;
+	matrix->row4.z = -(zFar + zNear) / (zFar - zNear);
 }
 
-static double Cotangent(double x) { return Math_Cos(x) / Math_Sin(x); }
+static float Cotangent(float x) { return Math_CosF(x) / Math_SinF(x); }
 void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, float zFar) {
 	float zNear = 0.1f;
-	float c = (float)Cotangent(0.5f * fov);
+	float c = Cotangent(0.5f * fov);
 
 	// Transposed, source https://learn.microsoft.com/en-us/windows/win32/opengl/glfrustum
 	// For a FOV based perspective matrix, left/right/top/bottom are calculated as:
@@ -214,38 +220,60 @@ void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, f
 	// Calculations are simplified because of left/right and top/bottom symmetry
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  c / aspect;
-	matrix->row2.Y =  c;
-	matrix->row3.Z = -(zFar + zNear) / (zFar - zNear);
-	matrix->row3.W = -1.0f;
-	matrix->row4.Z = -(2.0f * zFar * zNear) / (zFar - zNear);
-	matrix->row4.W =  0.0f;
+	matrix->row1.x =  c / aspect;
+	matrix->row2.y =  c;
+	matrix->row3.z = -(zFar + zNear) / (zFar - zNear);
+	matrix->row3.w = -1.0f;
+	matrix->row4.z = -(2.0f * zFar * zNear) / (zFar - zNear);
+	matrix->row4.w =  0.0f;
+	// TODO: should direct3d9 one be used insted with clip range from 0,1 ?
 }
 
 
 /*########################################################################################################################*
 *-----------------------------------------------------------Misc----------------------------------------------------------*
 *#########################################################################################################################*/
+static BitmapCol* PSP_GetRow(struct Bitmap* bmp, int y, void* ctx) {
+	cc_uint8* fb = (cc_uint8*)ctx;
+	return (BitmapCol*)(fb + y * BUFFER_WIDTH * 4);
+}
+
 cc_result Gfx_TakeScreenshot(struct Stream* output) {
-	return ERR_NOT_SUPPORTED;
+	int fbWidth, fbFormat;
+	void* fb;
+
+	int res = sceDisplayGetFrameBuf(&fb, &fbWidth, &fbFormat, PSP_DISPLAY_SETBUF_NEXTFRAME);
+	if (res < 0) return res;
+	if (!fb)     return ERR_NOT_SUPPORTED;
+
+	struct Bitmap bmp;
+	bmp.scan0  = NULL;
+	bmp.width  = SCREEN_WIDTH; 
+	bmp.height = SCREEN_HEIGHT;
+
+	return Png_Encode(&bmp, output, PSP_GetRow, false, fb);
 }
 
 void Gfx_GetApiInfo(cc_string* info) {
-	int pointerSize = sizeof(void*) * 8;
-
-	String_Format1(info, "-- Using PSP (%i bit) --\n", &pointerSize);
-	String_Format2(info, "Max texture size: (%i, %i)\n", &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
+	String_AppendConst(info, "-- Using PSP--\n");
+	PrintMaxTextureInfo(info);
 }
 
-void Gfx_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	gfx_minFrameMs = minFrameMs;
-	gfx_vsync      = vsync;
+void Gfx_SetVSync(cc_bool vsync) {
+	gfx_vsync = vsync;
 }
 
 void Gfx_BeginFrame(void) {
 	sceGuStart(GU_DIRECT, list);
 }
-void Gfx_Clear(void) { sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT); }
+
+void Gfx_ClearBuffers(GfxBuffers buffers) {
+	int targets = GU_FAST_CLEAR_BIT;
+	if (buffers & GFX_BUFFER_COLOR) targets |= GU_COLOR_BUFFER_BIT;
+	if (buffers & GFX_BUFFER_DEPTH) targets |= GU_DEPTH_BUFFER_BIT;
+	
+	sceGuClear(targets);
+}
 
 void Gfx_EndFrame(void) {
 	sceGuFinish();
@@ -253,31 +281,35 @@ void Gfx_EndFrame(void) {
 
 	if (gfx_vsync) sceDisplayWaitVblankStart();
 	sceGuSwapBuffers();
-	if (gfx_minFrameMs) LimitFPS();
 }
 
 void Gfx_OnWindowResize(void) { }
 
+void Gfx_SetViewport(int x, int y, int w, int h) { }
+void Gfx_SetScissor (int x, int y, int w, int h) { }
+
 
 static cc_uint8* gfx_vertices;
-/* Current format and size of vertices */
-static int gfx_stride, gfx_format = -1, gfx_fields;
+static int gfx_fields;
 
 
 /*########################################################################################################################*
 *----------------------------------------------------------Buffers--------------------------------------------------------*
 *#########################################################################################################################*/
-GfxResourceID Gfx_CreateIb(void* indices, int indicesCount) { return 0; }
-void Gfx_BindIb(GfxResourceID ib)    { }
-void Gfx_DeleteIb(GfxResourceID* ib) { }
+static cc_uint16 __attribute__((aligned(16))) gfx_indices[GFX_MAX_INDICES];
 static int vb_size;
 
+GfxResourceID Gfx_CreateIb2(int count, Gfx_FillIBFunc fillFunc, void* obj) {
+	fillFunc(gfx_indices, count, obj);
+	return gfx_indices;
+}
 
-GfxResourceID Gfx_CreateVb(VertexFormat fmt, int count) {
-	void* data = memalign(16, count * strideSizes[fmt]);
-	if (!data) Logger_Abort("Failed to allocate memory for GFX VB");
-	return data;
-	//return Mem_Alloc(count, strideSizes[fmt], "gfx VB");
+void Gfx_BindIb(GfxResourceID ib)    { }
+void Gfx_DeleteIb(GfxResourceID* ib) { }
+
+
+static GfxResourceID Gfx_AllocStaticVb(VertexFormat fmt, int count) {
+	return memalign(16, count * strideSizes[fmt]);
 }
 
 void Gfx_BindVb(GfxResourceID vb) { gfx_vertices = vb; }
@@ -299,12 +331,11 @@ void Gfx_UnlockVb(GfxResourceID vb) {
 }
 
 
-GfxResourceID Gfx_CreateDynamicVb(VertexFormat fmt, int maxVertices) {
-	void* data = memalign(16, maxVertices * strideSizes[fmt]);
-	if (!data) Logger_Abort("Failed to allocate memory for GFX VB");
-	return data;
-	//return Mem_Alloc(maxVertices, strideSizes[fmt], "gfx VB");
+static GfxResourceID Gfx_AllocDynamicVb(VertexFormat fmt, int maxVertices) {
+	return memalign(16, maxVertices * strideSizes[fmt]);
 }
+
+void Gfx_BindDynamicVb(GfxResourceID vb) { Gfx_BindVb(vb); }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 	vb_size = count * strideSizes[fmt];
@@ -316,10 +347,7 @@ void Gfx_UnlockDynamicVb(GfxResourceID vb) {
 	sceKernelDcacheWritebackInvalidateRange(vb, vb_size);
 }
 
-void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
-	Mem_Copy(vb, vertices, vCount * gfx_stride);
-	sceKernelDcacheWritebackInvalidateRange(vertices, vCount * gfx_stride);
-}
+void Gfx_DeleteDynamicVb(GfxResourceID* vb) { Gfx_DeleteVb(vb); }
 
 
 /*########################################################################################################################*
@@ -353,11 +381,12 @@ void Gfx_SetFogMode(FogFunc func) {
 	/* TODO: Implemen fake exp/exp2 fog */
 }
 
-void Gfx_SetAlphaTest(cc_bool enabled) { GU_Toggle(GU_ALPHA_TEST); }
+static void SetAlphaTest(cc_bool enabled) { GU_Toggle(GU_ALPHA_TEST); }
 
 void Gfx_DepthOnlyRendering(cc_bool depthOnly) {
 	cc_bool enabled = !depthOnly;
-	Gfx_SetColWriteMask(enabled, enabled, enabled, enabled);
+	SetColorWrite(enabled & gfx_colorMask[0], enabled & gfx_colorMask[1], 
+				  enabled & gfx_colorMask[2], enabled & gfx_colorMask[3]);
 }
 
 
@@ -365,15 +394,17 @@ void Gfx_DepthOnlyRendering(cc_bool depthOnly) {
 *---------------------------------------------------------Matrices--------------------------------------------------------*
 *#########################################################################################################################*/
 static int matrix_modes[] = { GU_PROJECTION, GU_VIEW };
-static ScePspFMatrix4 tmp_matrix;
+static ScePspFMatrix4 tmp_matrix; // 16 byte aligned
 
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
-	gumLoadMatrix(&tmp_matrix, matrix);
+	Mem_Copy(&tmp_matrix, matrix, sizeof(ScePspFMatrix4));
 	sceGuSetMatrix(matrix_modes[type], &tmp_matrix);
 }
 
-void Gfx_LoadIdentityMatrix(MatrixType type) {
-	sceGuSetMatrix(matrix_modes[type], &identity);
+void Gfx_LoadMVP(const struct Matrix* view, const struct Matrix* proj, struct Matrix* mvp) {
+	Gfx_LoadMatrix(MATRIX_VIEW, view);
+	Gfx_LoadMatrix(MATRIX_PROJ, proj);
+	Matrix_Mul(mvp, view, proj);
 }
 
 void Gfx_EnableTextureOffset(float x, float y) {
@@ -390,6 +421,7 @@ void Gfx_DisableTextureOffset(void) {
 *---------------------------------------------------------Drawing---------------------------------------------------------*
 *#########################################################################################################################*/
 cc_bool Gfx_WarnIfNecessary(void) { return false; }
+cc_bool Gfx_GetUIOptions(struct MenuOptionsScreen* s) { return false; }
 
 void Gfx_SetVertexFormat(VertexFormat fmt) {
 	if (fmt == gfx_format) return;

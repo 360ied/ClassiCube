@@ -1,16 +1,20 @@
 #ifndef CC_RESOURCES_H
 #define CC_RESOURCES_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* Implements checking, fetching, and patching the default game assets.
-	Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+	Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct HttpRequest;
 typedef void (*FetcherErrorCallback)(struct HttpRequest* req);
 
 /* Number of resources that need to be downloaded */
-extern int Resources_Count;
+extern int Resources_MissingCount;
 /* Total size of resources that need to be downloaded */
-extern int Resources_Size;
+extern int Resources_MissingSize;
+/* Whether required resources need to be downloaded */
+extern cc_bool Resources_MissingRequired;
 /* Checks existence of all assets */
 void Resources_CheckExistence(void);
 
@@ -32,4 +36,6 @@ void Fetcher_Run(void);
 /* Checks if any resources have finished downloading. */
 /* If any have, performs required patching and saving. */
 void Fetcher_Update(void);
+
+CC_END_HEADER
 #endif

@@ -1,9 +1,11 @@
 #ifndef CC_LOGGER_H
 #define CC_LOGGER_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Logs warnings/errors and also abstracts platform specific logging for fatal errors
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 typedef cc_bool (*Logger_DescribeError)(cc_result res, cc_string* dst);
@@ -43,6 +45,7 @@ void Logger_SysWarn2(cc_result res, const char* action, const cc_string* path);
 /* This is used to attempt to log some information about a crash due to invalid memory read, etc. */
 void Logger_Hook(void);
 /* Generates a backtrace based on the platform-specific CPU context. */
+/* NOTE: The provided CPU context may be modified (e.g on Windows) */
 void Logger_Backtrace(cc_string* trace, void* ctx);
 /* Logs a message to client.log on disc. */
 /* NOTE: The message is written raw, it is NOT converted to unicode (unlike Stream_WriteLine) */
@@ -54,4 +57,6 @@ void Logger_Abort(const char* raw_msg);
 /* Typically used to abort due to an unrecoverable error. (e.g. out of memory) */
 CC_NOINLINE void Logger_Abort2(cc_result result, const char* raw_msg);
 void Logger_FailToStart(const char* raw_msg);
+
+CC_END_HEADER
 #endif

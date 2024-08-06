@@ -71,9 +71,10 @@ cc_string String_UNSAFE_SubstringAt(STRING_REF const cc_string* str, int offset)
 int String_UNSAFE_Split(STRING_REF const cc_string* str, char c, cc_string* subs, int maxSubs) {
 	int beg = 0, end, count, i;
 
-	for (i = 0; i < maxSubs && beg <= str->length; i++) {
+	for (i = 0; i < maxSubs && beg <= str->length; i++) 
+	{
 		end = String_IndexOfAt(str, beg, c);
-		if (end == -1) end = str->length;
+		if (end == -1 || i == (maxSubs - 1)) end = str->length;
 
 		subs[i] = String_UNSAFE_Substring(str, beg, end - beg);
 		beg = end + 1;
@@ -146,6 +147,13 @@ int String_CaselessEqualsConst(const cc_string* a, const char* b) {
 
 
 void String_Append(cc_string* str, char c) {
+	/* MSVC in debug mode will initialise all variables on the stack with 0xCC by default */
+	/* So if a string is being passed with CC in all its fields, then it's probably invalid */
+#if _MSC_VER && _DEBUG
+	if (str->length == 0xCCCC && str->capacity == 0xCCCC) 
+		Logger_Abort("String must be initialised before calling String_Append");
+#endif
+
 	if (str->length == str->capacity) return;
 	str->buffer[str->length++] = c;
 }
@@ -433,33 +441,55 @@ void String_Format4(cc_string* str, const char* format, const void* a1, const vo
 
 		switch (format[++i]) {
 		case 'b': 
-			String_AppendInt(str, *((cc_uint8*)arg)); break;
+			String_AppendInt(str, *((cc_uint8*)arg)); 
+			break;
 		case 'i': 
-			String_AppendInt(str, *((int*)arg)); break;
+			String_AppendInt(str, *((int*)arg)); 
+			break;
 		case 'f': 
 			digits = format[++i] - '0';
-			String_AppendFloat(str, *((float*)arg), digits); break;
+			String_AppendFloat(str, *((float*)arg), digits); 
+			break;
 		case 'p':
 			digits = format[++i] - '0';
-			String_AppendPaddedInt(str, *((int*)arg), digits); break;
+			String_AppendPaddedInt(str, *((int*)arg), digits); 
+			break;
 		case 't': 
-			String_AppendBool(str, *((cc_bool*)arg)); break;
+			String_AppendBool(str, *((cc_bool*)arg)); 
+			break;
 		case 'c': 
-			String_AppendConst(str, (char*)arg);  break;
+			String_AppendConst(str, (char*)arg);  
+			break;
 		case 's': 
-			String_AppendString(str, (cc_string*)arg);  break;
+			String_AppendString(str, (cc_string*)arg);  
+			break;
 		case 'r':
-			String_Append(str, *((char*)arg)); break;
+			String_Append(str, *((char*)arg)); 
+			break;
 		case 'x':
 			if (sizeof(cc_uintptr) == 4) {
-				String_Hex32(str, *((cc_uint32*)arg)); break;
+				String_Hex32(str, *((cc_uint32*)arg));
 			} else {
-				String_Hex64(str, *((cc_uint64*)arg)); break;
+				String_Hex64(str, *((cc_uint64*)arg));
 			}
+			break;
 		case 'h':
-			String_Hex32(str, *((cc_uint32*)arg)); break;
+			String_Hex32(str, *((cc_uint32*)arg)); 
+			break;
+		case 'e':
+			digits = *((int*)arg);
+			if (digits >= -0xFFFF && digits <= 0xFFFF) {
+				String_AppendInt(str, digits);
+			} else {
+				String_Hex32(str, (cc_uint32)digits); 
+			}
+			break;
 		case '%':
-			String_Append(str, '%'); break;
+			String_Append(str, '%'); 
+			break;
+		case 'N':
+			str->buffer[str->length++] = '\0'; /* Assumes using String_InitArray_NT */
+			break;
 		default: 
 			Logger_Abort("Invalid type for string format");
 		}
@@ -608,7 +638,7 @@ void String_AppendUtf8(cc_string* value, const void* data, int numBytes) {
 	}
 }
 
-void String_DecodeCP1252(cc_string* value, const void* data, int numBytes) {
+void String_AppendCP1252(cc_string* value, const void* data, int numBytes) {
 	const cc_uint8* chars = (const cc_uint8*)data;
 	int i; char c;
 
@@ -672,7 +702,8 @@ static cc_bool Convert_TryParseDigits(const cc_string* str, cc_bool* negative, c
 	if (str->buffer[0] == '+') { offset = 1; }
 
 	/* add digits, starting at last digit */
-	for (i = str->length - 1; i >= offset; i--) {
+	for (i = str->length - 1; i >= offset; i--) 
+	{
 		char c = str->buffer[i];
 		if (c < '0' || c > '9' || digits < start) return false;
 		*digits-- = c;

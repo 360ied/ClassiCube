@@ -11,6 +11,7 @@
 #include "Errors.h"
 #include "Utils.h"
 #include "Http.h"
+#include "LBackend.h"
 
 /*########################################################################################################################*
 *----------------------------------------------------------JSON-----------------------------------------------------------*
@@ -89,6 +90,7 @@ static void Json_ConsumeString(struct JsonContext* ctx, cc_string* str) {
 		if (!ctx->left) break;
 		c = *ctx->cur; JsonContext_Consume(ctx, 1);
 		if (c == '/' || c == '\\' || c == '"') { String_Append(str, c); continue; }
+		if (c == 'n') { String_Append(str, '\n'); continue; }
 
 		/* form of \uYYYY */
 		if (c != 'u' || ctx->left < 4) break;
@@ -181,15 +183,17 @@ void Json_Init(struct JsonContext* ctx, STRING_REF char* str, int len) {
 	String_InitArray(ctx->_tmp, ctx->_tmpBuffer);
 }
 
-void Json_Parse(struct JsonContext* ctx) {
+cc_bool Json_Parse(struct JsonContext* ctx) {
 	int token;
 	do {
 		token = Json_ConsumeToken(ctx);
 		Json_ConsumeValue(token, ctx);
 	} while (token != TOKEN_NONE);
+
+	return !ctx->failed;
 }
 
-static void Json_Handle(cc_uint8* data, cc_uint32 len, 
+static cc_bool Json_Handle(cc_uint8* data, cc_uint32 len, 
 						JsonOnValue onVal, JsonOnNew newArr, JsonOnNew newObj) {
 	struct JsonContext ctx;
 	/* NOTE: classicube.net uses \u JSON for non ASCII, no need to UTF8 convert characters here */
@@ -198,7 +202,7 @@ static void Json_Handle(cc_uint8* data, cc_uint32 len,
 	if (onVal)  ctx.OnValue     = onVal;
 	if (newArr) ctx.OnNewArray  = newArr;
 	if (newObj) ctx.OnNewObject = newObj;
-	Json_Parse(&ctx);
+	return Json_Parse(&ctx);
 }
 
 
@@ -207,6 +211,7 @@ static void Json_Handle(cc_uint8* data, cc_uint32 len,
 *#########################################################################################################################*/
 static char servicesBuffer[FILENAME_SIZE];
 static cc_string servicesServer = String_FromArray(servicesBuffer);
+static struct StringsBuffer ccCookies;
 
 static void LWebTask_Reset(struct LWebTask* task) {
 	task->completed = false;
@@ -216,6 +221,7 @@ static void LWebTask_Reset(struct LWebTask* task) {
 
 void LWebTask_Tick(struct LWebTask* task, LWebTask_ErrorCallback errorCallback) {
 	struct HttpRequest item;
+
 	if (task->completed) return;
 	if (!Http_GetResult(task->reqID, &item)) return;
 
@@ -239,7 +245,16 @@ void LWebTasks_Init(void) {
 /*########################################################################################################################*
 *-------------------------------------------------------GetTokenTask------------------------------------------------------*
 *#########################################################################################################################*/
-static struct StringsBuffer ccCookies;
+/*
+< GET /api/login/
+
+> {
+>	"username": null,
+>	"authenticated": false,
+>	"token": "f033ab37c30201f73f142449d037028d",
+>	"errors": []
+>}
+*/
 struct GetTokenTaskData GetTokenTask;
 
 static void GetTokenTask_OnValue(struct JsonContext* ctx, const cc_string* str) {
@@ -253,7 +268,10 @@ static void GetTokenTask_OnValue(struct JsonContext* ctx, const cc_string* str) 
 }
 
 static void GetTokenTask_Handle(cc_uint8* data, cc_uint32 len) {
-	Json_Handle(data, len, GetTokenTask_OnValue, NULL, NULL);
+	static cc_string err_msg = String_FromConst("Error parsing get login token response JSON");
+
+	cc_bool success = Json_Handle(data, len, GetTokenTask_OnValue, NULL, NULL);
+	if (!success) Logger_WarnFunc(&err_msg);
 }
 
 void GetTokenTask_Run(void) {
@@ -278,6 +296,17 @@ void GetTokenTask_Run(void) {
 /*########################################################################################################################*
 *--------------------------------------------------------SignInTask-------------------------------------------------------*
 *#########################################################################################################################*/
+/*
+< POST /api/login/
+< username=AndrewPH&password=examplePassW0rd&token=f033ab37c30201f73f142449d037028d
+
+> {
+> 	"username": "AndrewPH",
+> 	"authenticated": true,
+> 	"token": "33e75ff09dd601bbe69f351039152189",
+> 	"errors": []
+> }
+*/
 struct SignInTaskData SignInTask;
 
 static void SignInTask_LogError(const cc_string* str) {
@@ -309,7 +338,10 @@ static void SignInTask_OnValue(struct JsonContext* ctx, const cc_string* str) {
 }
 
 static void SignInTask_Handle(cc_uint8* data, cc_uint32 len) {
-	Json_Handle(data, len, SignInTask_OnValue, NULL, NULL);
+	static cc_string err_msg = String_FromConst("Error parsing sign in response JSON");
+
+	cc_bool success = Json_Handle(data, len, SignInTask_OnValue, NULL, NULL);
+	if (!success) Logger_WarnFunc(&err_msg);
 }
 
 static void SignInTask_Append(cc_string* dst, const char* key, const cc_string* value) {
@@ -345,6 +377,13 @@ void SignInTask_Run(const cc_string* user, const cc_string* pass, const cc_strin
 /*########################################################################################################################*
 *-----------------------------------------------------FetchServerTask-----------------------------------------------------*
 *#########################################################################################################################*/
+/*
+< GET /api/server/a709fabdf836a2a102c952442bf2dab1
+
+> { "servers" : [
+>	{"hash": "a709fabdf836a2a102c952442bf2dab1", "maxplayers": 70, "name": "Freebuild server", "players": 5, "software": "MCGalaxy", "uptime": 185447, "country_abbr": "CA"},
+> ]}
+*/
 struct FetchServerData FetchServerTask;
 static struct ServerInfo* curServer;
 
@@ -418,6 +457,14 @@ void FetchServerTask_Run(const cc_string* hash) {
 /*########################################################################################################################*
 *-----------------------------------------------------FetchServersTask----------------------------------------------------*
 *#########################################################################################################################*/
+/*
+< GET /api/servers/
+
+> { "servers" : [
+>	{"hash": "a709fabdf836a2a102c952442bf2dab1", "maxplayers": 70, "name": "Freebuild server", "players": 5, "software": "MCGalaxy", "uptime": 185447, "country_abbr": "CA"},
+>	{"hash": "23860c5e192cbaa4698408338efd61cc", "maxplayers": 30, "name": "Other server", "players": 0, software: "", "uptime": 54661, "country_abbr": "T1"}
+> ]}
+*/
 struct FetchServersData FetchServersTask;
 static void FetchServersTask_Count(struct JsonContext* ctx) {
 	/* JSON is expected in this format: */
@@ -437,7 +484,10 @@ static void FetchServersTask_Next(struct JsonContext* ctx) {
 }
 
 static void FetchServersTask_Handle(cc_uint8* data, cc_uint32 len) {
+	static cc_string err_msg = String_FromConst("Error parsing servers list response JSON");
+
 	int count;
+	cc_bool success;
 	Mem_Free(FetchServersTask.servers);
 	Mem_Free(FetchServersTask.orders);
 	Session_Save();
@@ -447,9 +497,10 @@ static void FetchServersTask_Handle(cc_uint8* data, cc_uint32 len) {
 	FetchServersTask.orders     = NULL;
 
 	FetchServersTask.numServers = 0;
-	Json_Handle(data, len, NULL, NULL, FetchServersTask_Count);
-	count = FetchServersTask.numServers;
+	success = Json_Handle(data, len, NULL, NULL, FetchServersTask_Count);
+	count   = FetchServersTask.numServers;
 
+	if (!success) Logger_WarnFunc(&err_msg);
 	if (count <= 0) return;
 	FetchServersTask.servers = (struct ServerInfo*)Mem_Alloc(count, sizeof(struct ServerInfo), "servers list");
 	FetchServersTask.orders  = (cc_uint16*)Mem_Alloc(count, 2, "servers order");
@@ -481,6 +532,11 @@ void FetchServersTask_ResetOrder(void) {
 /*########################################################################################################################*
 *-----------------------------------------------------CheckUpdateTask-----------------------------------------------------*
 *#########################################################################################################################*/
+/*
+< GET /builds.json
+
+> {"latest_ts": 1718187640.9587102, "release_ts": 1693265172.020421, "release_version": "1.3.6"}
+*/
 struct CheckUpdateData CheckUpdateTask;
 static char relVersionBuffer[16];
 
@@ -506,7 +562,10 @@ static void CheckUpdateTask_OnValue(struct JsonContext* ctx, const cc_string* st
 }
 
 static void CheckUpdateTask_Handle(cc_uint8* data, cc_uint32 len) {
-	Json_Handle(data, len, CheckUpdateTask_OnValue, NULL, NULL);
+	static cc_string err_msg = String_FromConst("Error parsing update check response JSON");
+
+	cc_bool success = Json_Handle(data, len, CheckUpdateTask_OnValue, NULL, NULL);
+	if (!success) Logger_WarnFunc(&err_msg);
 }
 
 void CheckUpdateTask_Run(void) {
@@ -563,39 +622,13 @@ void FetchUpdateTask_Run(cc_bool release, int buildIndex) {
 *#########################################################################################################################*/
 struct FetchFlagsData FetchFlagsTask;
 static int flagsCount, flagsCapacity;
-
 static struct Flag* flags;
-
-/* Scales up flag bitmap if necessary */
-static void FetchFlagsTask_Scale(struct Bitmap* bmp) {
-	struct Bitmap scaled;
-	int width  = Display_ScaleX(bmp->width);
-	int height = Display_ScaleY(bmp->height);
-	/* at default DPI don't need to rescale it */
-	if (width == bmp->width && height == bmp->height) return;
-
-	Bitmap_TryAllocate(&scaled, width, height);
-	if (!scaled.scan0) {
-		Logger_SysWarn(ERR_OUT_OF_MEMORY, "resizing flags bitmap"); return;
-	}
-
-	Bitmap_Scale(&scaled, bmp, 0, 0, bmp->width, bmp->height);
-	Mem_Free(bmp->scan0);
-	*bmp = scaled;
-}
 
 static void FetchFlagsTask_DownloadNext(void);
 static void FetchFlagsTask_Handle(cc_uint8* data, cc_uint32 len) {
 	struct Flag* flag = &flags[FetchFlagsTask.count];
-	struct Stream s;
-	cc_result res;
-
-	Stream_ReadonlyMemory(&s, data, len);
-	res = Png_Decode(&flag->bmp, &s);
-	if (res) Logger_SysWarn(res, "decoding flag");
-	flag->meta = NULL;
-
-	FetchFlagsTask_Scale(&flag->bmp);
+	LBackend_DecodeFlag(flag, data, len);
+	
 	FetchFlagsTask.count++;
 	FetchFlagsTask_DownloadNext();
 }
@@ -628,7 +661,8 @@ static void FetchFlagsTask_Ensure(void) {
 
 void FetchFlagsTask_Add(const struct ServerInfo* server) {
 	int i;
-	for (i = 0; i < flagsCount; i++) {
+	for (i = 0; i < flagsCount; i++) 
+	{
 		if (flags[i].country[0] != server->country[0]) continue;
 		if (flags[i].country[1] != server->country[1]) continue;
 		/* flag is already or will be downloaded */
@@ -639,6 +673,7 @@ void FetchFlagsTask_Add(const struct ServerInfo* server) {
 	Bitmap_Init(flags[flagsCount].bmp, 0, 0, NULL);
 	flags[flagsCount].country[0] = server->country[0];
 	flags[flagsCount].country[1] = server->country[1];
+	flags[flagsCount].meta = NULL;
 
 	flagsCount++;
 	FetchFlagsTask_DownloadNext();
@@ -646,7 +681,8 @@ void FetchFlagsTask_Add(const struct ServerInfo* server) {
 
 struct Flag* Flags_Get(const struct ServerInfo* server) {
 	int i;
-	for (i = 0; i < FetchFlagsTask.count; i++) {
+	for (i = 0; i < FetchFlagsTask.count; i++) 
+	{
 		if (flags[i].country[0] != server->country[0]) continue;
 		if (flags[i].country[1] != server->country[1]) continue;
 		return &flags[i];

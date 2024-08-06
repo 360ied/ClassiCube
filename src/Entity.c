@@ -9,12 +9,11 @@
 #include "Funcs.h"
 #include "Graphics.h"
 #include "Lighting.h"
-#include "Drawer2D.h"
-#include "Particle.h"
 #include "Http.h"
 #include "Chat.h"
 #include "Model.h"
 #include "Input.h"
+#include "InputHandler.h"
 #include "Gui.h"
 #include "Stream.h"
 #include "Bitmap.h"
@@ -22,6 +21,7 @@
 #include "Options.h"
 #include "Errors.h"
 #include "Utils.h"
+#include "EntityRenderers.h"
 
 const char* const NameMode_Names[NAME_MODE_COUNT]   = { "None", "Hovered", "All", "AllHovered", "AllUnscaled" };
 const char* const ShadowMode_Names[SHADOW_MODE_COUNT] = { "None", "SnapToBlock", "Circle", "CircleAll" };
@@ -33,12 +33,13 @@ const char* const ShadowMode_Names[SHADOW_MODE_COUNT] = { "None", "SnapToBlock",
 static PackedCol Entity_GetColor(struct Entity* e) {
 	Vec3 eyePos = Entity_GetEyePosition(e);
 	IVec3 pos; IVec3_Floor(&pos, &eyePos);
-	return Lighting.Color(pos.X, pos.Y, pos.Z);
+	return Lighting.Color(pos.x, pos.y, pos.z);
 }
 
 void Entity_Init(struct Entity* e) {
 	static const cc_string model = String_FromConst("humanoid");
 	Vec3_Set(e->ModelScale, 1,1,1);
+	e->Flags      = ENTITY_FLAG_HAS_MODELVB;
 	e->uScale     = 1.0f;
 	e->vScale     = 1.0f;
 	e->_skinReqID = 0;
@@ -47,27 +48,39 @@ void Entity_Init(struct Entity* e) {
 	Entity_SetModel(e, &model);
 }
 
+void Entity_SetName(struct Entity* e, const cc_string* name) {
+	EntityNames_Delete(e);
+	String_CopyToRawArray(e->NameRaw, name);
+}
+
 Vec3 Entity_GetEyePosition(struct Entity* e) {
-	Vec3 pos = e->Position; pos.Y += Entity_GetEyeHeight(e); return pos;
+	Vec3 pos = e->Position; pos.y += Entity_GetEyeHeight(e); return pos;
 }
 
 float Entity_GetEyeHeight(struct Entity* e) {
-	return e->Model->GetEyeY(e) * e->ModelScale.Y;
+	return e->Model->GetEyeY(e) * e->ModelScale.y;
 }
 
 void Entity_GetTransform(struct Entity* e, Vec3 pos, Vec3 scale, struct Matrix* m) {
 	struct Matrix tmp;
-	Matrix_Scale(m, scale.X, scale.Y, scale.Z);
+	Matrix_Scale(m, scale.x, scale.y, scale.z);
 
-	Matrix_RotateZ(&tmp, -e->RotZ * MATH_DEG2RAD);
-	Matrix_MulBy(m, &tmp);
-	Matrix_RotateX(&tmp, -e->RotX * MATH_DEG2RAD);
-	Matrix_MulBy(m, &tmp);
-	Matrix_RotateY(&tmp, -e->RotY * MATH_DEG2RAD);
-	Matrix_MulBy(m, &tmp);
-	Matrix_Translate(&tmp, pos.X, pos.Y, pos.Z);
-	Matrix_MulBy(m, &tmp);
-	/* return rotZ * rotX * rotY * scale * translate; */
+	if (e->RotZ) {
+		Matrix_RotateZ( &tmp, -e->RotZ * MATH_DEG2RAD);
+		Matrix_MulBy(m, &tmp);
+	}
+	if (e->RotX) {
+		Matrix_RotateX( &tmp, -e->RotX * MATH_DEG2RAD);
+		Matrix_MulBy(m, &tmp);
+	}
+	if (e->RotY) {
+		Matrix_RotateY( &tmp, -e->RotY * MATH_DEG2RAD);
+		Matrix_MulBy(m, &tmp);
+	}
+
+	Matrix_Translate(&tmp, pos.x, pos.y, pos.z);
+	Matrix_MulBy(m,  &tmp);
+	/* return scale * rotZ * rotX * rotY * translate; */
 }
 
 void Entity_GetPickingBounds(struct Entity* e, struct AABB* bb) {
@@ -81,11 +94,13 @@ void Entity_GetBounds(struct Entity* e, struct AABB* bb) {
 static void Entity_ParseScale(struct Entity* e, const cc_string* scale) {
 	float value;
 	if (!Convert_ParseFloat(scale, &value)) return;
-
 	value = max(value, 0.001f);
+
 	/* local player doesn't allow giant model scales */
 	/* (can't climb stairs, extremely CPU intensive collisions) */
-	if (e->ModelRestrictedScale) { value = min(value, e->Model->maxScale); }
+	if (e->Flags & ENTITY_FLAG_MODEL_RESTRICTED_SCALE) {
+		value = min(value, e->Model->maxScale); 
+	}
 	Vec3_Set(e->ModelScale, value,value,value);
 }
 
@@ -119,6 +134,9 @@ void Entity_SetModel(struct Entity* e, const cc_string* model) {
 
 	Entity_ParseScale(e, &scale);
 	Entity_UpdateModelBounds(e);
+
+	if (e->Flags & ENTITY_FLAG_HAS_MODELVB)
+		Gfx_DeleteDynamicVb(&e->ModelVB);
 }
 
 void Entity_UpdateModelBounds(struct Entity* e) {
@@ -141,13 +159,13 @@ cc_bool Entity_TouchesAny(struct AABB* bounds, Entity_TouchesCondition condition
 	IVec3_Floor(&bbMin, &bounds->Min);
 	IVec3_Floor(&bbMax, &bounds->Max);
 
-	bbMin.X = max(bbMin.X, 0); bbMax.X = min(bbMax.X, World.MaxX);
-	bbMin.Y = max(bbMin.Y, 0); bbMax.Y = min(bbMax.Y, World.MaxY);
-	bbMin.Z = max(bbMin.Z, 0); bbMax.Z = min(bbMax.Z, World.MaxZ);
+	bbMin.x = max(bbMin.x, 0); bbMax.x = min(bbMax.x, World.MaxX);
+	bbMin.y = max(bbMin.y, 0); bbMax.y = min(bbMax.y, World.MaxY);
+	bbMin.z = max(bbMin.z, 0); bbMax.z = min(bbMax.z, World.MaxZ);
 
-	for (y = bbMin.Y; y <= bbMax.Y; y++) { v.Y = (float)y;
-		for (z = bbMin.Z; z <= bbMax.Z; z++) { v.Z = (float)z;
-			for (x = bbMin.X; x <= bbMax.X; x++) { v.X = (float)x;
+	for (y = bbMin.y; y <= bbMax.y; y++) { v.y = (float)y;
+		for (z = bbMin.z; z <= bbMax.z; z++) { v.z = (float)z;
+			for (x = bbMin.x; x <= bbMax.x; x++) { v.x = (float)x;
 
 				block = World_GetBlock(x, y, z);
 				Vec3_Add(&blockBB.Min, &v, &Blocks.MinBB[block]);
@@ -164,7 +182,7 @@ cc_bool Entity_TouchesAny(struct AABB* bounds, Entity_TouchesCondition condition
 static cc_bool IsRopeCollide(BlockID b) { return Blocks.ExtendedCollide[b] == COLLIDE_CLIMB; }
 cc_bool Entity_TouchesAnyRope(struct Entity* e) {
 	struct AABB bounds; Entity_GetBounds(e, &bounds);
-	bounds.Max.Y += 0.5f / 16.0f;
+	bounds.Max.y += 0.5f / 16.0f;
 	return Entity_TouchesAny(&bounds, IsRopeCollide);
 }
 
@@ -181,103 +199,6 @@ cc_bool Entity_TouchesAnyWater(struct Entity* e) {
 	struct AABB bounds; Entity_GetBounds(e, &bounds);
 	AABB_Offset(&bounds, &bounds, &entity_liqExpand);
 	return Entity_TouchesAny(&bounds, IsWaterCollide);
-}
-
-
-
-/*########################################################################################################################*
-*-----------------------------------------------------Entity nametag------------------------------------------------------*
-*#########################################################################################################################*/
-#define NAME_IS_EMPTY -30000
-#define NAME_OFFSET 3 /* offset of back layer of name above an entity */
-
-static void MakeNameTexture(struct Entity* e) {
-	cc_string colorlessName; char colorlessBuffer[STRING_SIZE];
-	BitmapCol shadowColor = BitmapCol_Make(80, 80, 80, 255);
-	BitmapCol origWhiteColor;
-
-	struct DrawTextArgs args;
-	struct FontDesc font;
-	struct Context2D ctx;
-	int width, height;
-	cc_string name;
-
-	/* Names are always drawn using default.png font */
-	Font_MakeBitmapped(&font, 24, FONT_FLAGS_NONE);
-	/* Don't want DPI scaling or padding */
-	font.size = 24; font.height = 24;
-
-	name = String_FromRawArray(e->NameRaw);
-	DrawTextArgs_Make(&args, &name, &font, false);
-	width = Drawer2D_TextWidth(&args);
-
-	if (!width) {
-		e->NameTex.ID = 0;
-		e->NameTex.X  = NAME_IS_EMPTY;
-	} else {
-		String_InitArray(colorlessName, colorlessBuffer);
-		width  += NAME_OFFSET; 
-		height = Drawer2D_TextHeight(&args) + NAME_OFFSET;
-
-		Context2D_Alloc(&ctx, width, height);
-		{
-			origWhiteColor = Drawer2D.Colors['f'];
-
-			Drawer2D.Colors['f'] = shadowColor;
-			Drawer2D_WithoutColors(&colorlessName, &name);
-			args.text = colorlessName;
-			Context2D_DrawText(&ctx, &args, NAME_OFFSET, NAME_OFFSET);
-
-			Drawer2D.Colors['f'] = origWhiteColor;
-			args.text = name;
-			Context2D_DrawText(&ctx, &args, 0, 0);
-		}
-		Context2D_MakeTexture(&e->NameTex, &ctx);
-		Context2D_Free(&ctx);
-	}
-}
-
-static void DrawName(struct Entity* e) {
-	struct VertexTextured vertices[4];
-	struct Model* model;
-	struct Matrix mat;
-	Vec3 pos;
-	float scale;
-	Vec2 size;
-
-	if (e->NameTex.X == NAME_IS_EMPTY) return;
-	if (!e->NameTex.ID) MakeNameTexture(e);
-	Gfx_BindTexture(e->NameTex.ID);
-
-	model = e->Model;
-	Vec3_TransformY(&pos, model->GetNameY(e), &e->Transform);
-
-	scale  = model->nameScale * e->ModelScale.Y;
-	scale  = scale > 1.0f ? (1.0f/70.0f) : (scale/70.0f);
-	size.X = e->NameTex.Width * scale; size.Y = e->NameTex.Height * scale;
-
-	if (Entities.NamesMode == NAME_MODE_ALL_UNSCALED && LocalPlayer_Instance.Hacks.CanSeeAllNames) {			
-		Matrix_Mul(&mat, &Gfx.View, &Gfx.Projection); /* TODO: This mul is slow, avoid it */
-		/* Get W component of transformed position */
-		scale = pos.X * mat.row1.W + pos.Y * mat.row2.W + pos.Z * mat.row3.W + mat.row4.W;
-		size.X *= scale * 0.2f; size.Y *= scale * 0.2f;
-	}
-
-	Particle_DoRender(&size, &pos, &e->NameTex.uv, PACKEDCOL_WHITE, vertices);
-	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
-	Gfx_UpdateDynamicVb_IndexedTris(Gfx_texVb, vertices, 4);
-}
-
-/* Deletes the texture containing the entity's nametag */
-CC_NOINLINE static void DeleteNameTex(struct Entity* e) {
-	Gfx_DeleteTexture(&e->NameTex.ID);
-	e->NameTex.X = 0; /* X is used as an 'empty name' flag */
-}
-
-void Entity_SetName(struct Entity* e, const cc_string* name) {
-	DeleteNameTex(e);
-	String_CopyToRawArray(e->NameRaw, name);
-	/* name texture redraw deferred until necessary */
 }
 
 
@@ -406,11 +327,13 @@ static cc_result ApplySkin(struct Entity* e, struct Bitmap* bmp, struct Stream* 
 	if ((res = EnsurePow2Skin(e, bmp))) return res;
 	e->SkinType = Utils_CalcSkinType(bmp);
 
-	if (bmp->width > Gfx.MaxTexWidth || bmp->height > Gfx.MaxTexHeight) {
+	if (!Gfx_CheckTextureSize(bmp->width, bmp->height, 0)) {
 		Chat_Add1("&cSkin %s is too large", skin);
 	} else {
-		if (e->Model->usesHumanSkin) Entity_ClearHat(bmp, e->SkinType);
-		Gfx_RecreateTexture(&e->TextureId, bmp, TEXTURE_FLAG_MANAGED, false);
+		if (e->Model->flags & MODEL_FLAG_CLEAR_HAT) 
+			Entity_ClearHat(bmp, e->SkinType);
+
+		e->TextureId = Gfx_CreateTexture(bmp, TEXTURE_FLAG_MANAGED, false);
 		Entity_SetSkinAll(e, false);
 	}
 	return 0;
@@ -445,7 +368,7 @@ static void Entity_CheckSkin(struct Entity* e) {
 
 	if (!e->SkinFetchState) {
 		first = Entity_FirstOtherWithSameSkinAndFetchedSkin(e);
-		flags = e == &LocalPlayer_Instance.Base ? HTTP_FLAG_NOCACHE : 0;
+		flags = e == &LocalPlayer_Instances[0].Base ? HTTP_FLAG_NOCACHE : 0;
 
 		if (!first) {
 			e->_skinReqID     = Http_AsyncGetSkin(&skin, flags);
@@ -477,7 +400,8 @@ static cc_bool CanDeleteTexture(struct Entity* except) {
 	int i;
 	if (!except->TextureId) return false;
 
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
+	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
+	{
 		if (!Entities.List[i] || Entities.List[i] == except)  continue;
 		if (Entities.List[i]->TextureId == except->TextureId) return false;
 	}
@@ -520,160 +444,90 @@ void Entity_LerpAngles(struct Entity* e, float t) {
 *--------------------------------------------------------Entities---------------------------------------------------------*
 *#########################################################################################################################*/
 struct _EntitiesData Entities;
-static EntityID entities_closestId;
 
 void Entities_Tick(struct ScheduledTask* task) {
 	int i;
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
+	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
+	{
 		if (!Entities.List[i]) continue;
 		Entities.List[i]->VTABLE->Tick(Entities.List[i], task->interval);
 	}
 }
 
-void Entities_RenderModels(double delta, float t) {
+void Entities_RenderModels(float delta, float t) {
 	int i;
 	Gfx_SetAlphaTest(true);
 	
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
+	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
+	{
 		if (!Entities.List[i]) continue;
 		Entities.List[i]->VTABLE->RenderModel(Entities.List[i], delta, t);
 	}
 	Gfx_SetAlphaTest(false);
 }
-	
-
-void Entities_RenderNames(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
-	cc_bool hadFog;
-	int i;
-
-	if (Entities.NamesMode == NAME_MODE_NONE) return;
-	entities_closestId = Entities_GetClosest(&p->Base);
-	if (!p->Hacks.CanSeeAllNames || Entities.NamesMode != NAME_MODE_ALL) return;
-
-	Gfx_SetAlphaTest(true);
-	hadFog = Gfx_GetFog();
-	if (hadFog) Gfx_SetFog(false);
-
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		if (!Entities.List[i]) continue;
-		if (i != entities_closestId || i == ENTITIES_SELF_ID) {
-			Entities.List[i]->VTABLE->RenderName(Entities.List[i]);
-		}
-	}
-
-	Gfx_SetAlphaTest(false);
-	if (hadFog) Gfx_SetFog(true);
-}
-
-void Entities_RenderHoveredNames(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
-	cc_bool allNames, hadFog;
-	int i;
-
-	if (Entities.NamesMode == NAME_MODE_NONE) return;
-	allNames = !(Entities.NamesMode == NAME_MODE_HOVERED || Entities.NamesMode == NAME_MODE_ALL) 
-		&& p->Hacks.CanSeeAllNames;
-
-	Gfx_SetAlphaTest(true);
-	Gfx_SetDepthTest(false);
-	hadFog = Gfx_GetFog();
-	if (hadFog) Gfx_SetFog(false);
-
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		if (!Entities.List[i]) continue;
-		if ((i == entities_closestId || allNames) && i != ENTITIES_SELF_ID) {
-			Entities.List[i]->VTABLE->RenderName(Entities.List[i]);
-		}
-	}
-
-	Gfx_SetAlphaTest(false);
-	Gfx_SetDepthTest(true);
-	if (hadFog) Gfx_SetFog(true);
-}
-
-static void Entity_ContextLost(struct Entity* e) { DeleteNameTex(e); }
 
 static void Entities_ContextLost(void* obj) {
+	struct Entity* entity;
 	int i;
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		if (!Entities.List[i]) continue;
-		Entity_ContextLost(Entities.List[i]);
-	}
-	Gfx_DeleteTexture(&ShadowComponent_ShadowTex);
 
-	if (Gfx.ManagedTextures) return;
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		if (!Entities.List[i]) continue;
-		DeleteSkin(Entities.List[i]);
+	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
+	{
+		entity = Entities.List[i];
+		if (!entity) continue;
+
+		if (entity->Flags & ENTITY_FLAG_HAS_MODELVB)
+			Gfx_DeleteDynamicVb(&entity->ModelVB);
+
+		if (!Gfx.ManagedTextures) 
+			DeleteSkin(entity);
 	}
 }
-/* No OnContextCreated, names/skin textures remade when needed */
+/* No OnContextCreated, skin textures remade when needed */
 
-static void Entities_ChatFontChanged(void* obj) {
-	int i;
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		if (!Entities.List[i]) continue;
-		DeleteNameTex(Entities.List[i]);
-		/* name redraw is deferred until rendered */
-	}
-}
+void Entities_Remove(int id) {
+	struct Entity* e = Entities.List[id];
+	if (!e) return;
 
-void Entities_Remove(EntityID id) {
 	Event_RaiseInt(&EntityEvents.Removed, id);
-	Entities.List[id]->VTABLE->Despawn(Entities.List[id]);
+	e->VTABLE->Despawn(e);
 	Entities.List[id] = NULL;
 
 	/* TODO: Move to EntityEvents.Removed callback instead */
-	if (TabList_EntityLinked_Get(id)) {
+	if (id < TABLIST_MAX_NAMES && TabList_EntityLinked_Get(id)) {
 		TabList_Remove(id);
 		TabList_EntityLinked_Reset(id);
 	}
 }
 
-EntityID Entities_GetClosest(struct Entity* src) {
+int Entities_GetClosest(struct Entity* src) {
 	Vec3 eyePos = Entity_GetEyePosition(src);
-	Vec3 dir = Vec3_GetDirVector(src->Yaw * MATH_DEG2RAD, src->Pitch * MATH_DEG2RAD);
-	float closestDist = MATH_POS_INF;
-	EntityID targetId = ENTITIES_SELF_ID;
+	Vec3 dir    = Vec3_GetDirVector(src->Yaw * MATH_DEG2RAD, src->Pitch * MATH_DEG2RAD);
+	float closestDist = -200; /* NOTE: was previously positive infinity */
+	int targetID = -1;
 
 	float t0, t1;
 	int i;
 
-	for (i = 0; i < ENTITIES_SELF_ID; i++) { /* because we don't want to pick against local player */
-		struct Entity* entity = Entities.List[i];
-		if (!entity) continue;
+	for (i = 0; i < ENTITIES_MAX_COUNT; i++) /* because we don't want to pick against local player */
+	{
+		struct Entity* e = Entities.List[i];
+		if (!e || e == &Entities.CurPlayer->Base) continue;
+		if (!Intersection_RayIntersectsRotatedBox(eyePos, dir, e, &t0, &t1)) continue;
 
-		if (Intersection_RayIntersectsRotatedBox(eyePos, dir, entity, &t0, &t1) && t0 < closestDist) {
+		if (targetID == -1 || t0 < closestDist) {
 			closestDist = t0;
-			targetId = (EntityID)i;
+			targetID    = i;
 		}
 	}
-	return targetId;
+	return targetID;
 }
 
-void Entities_DrawShadows(void) {
-	int i;
-	if (Entities.ShadowsMode == SHADOW_MODE_NONE) return;
-	ShadowComponent_BoundShadowTex = false;
+static void Player_Despawn(struct Entity* e) {
+	DeleteSkin(e);
+	EntityNames_Delete(e);
 
-	Gfx_SetAlphaArgBlend(true);
-	Gfx_SetDepthWrite(false);
-	Gfx_SetAlphaBlending(true);
-
-	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
-	ShadowComponent_Draw(Entities.List[ENTITIES_SELF_ID]);
-
-	if (Entities.ShadowsMode == SHADOW_MODE_CIRCLE_ALL) {	
-		for (i = 0; i < ENTITIES_SELF_ID; i++) {
-			if (!Entities.List[i] || !Entities.List[i]->ShouldRender) continue;
-			ShadowComponent_Draw(Entities.List[i]);
-		}
-	}
-
-	Gfx_SetAlphaArgBlend(false);
-	Gfx_SetDepthWrite(true);
-	Gfx_SetAlphaBlending(false);
+	if (e->Flags & ENTITY_FLAG_HAS_MODELVB)
+		Gfx_DeleteDynamicVb(&e->ModelVB);
 }
 
 
@@ -758,84 +612,61 @@ struct IGameComponent TabList_Component = {
 };
 
 
-static void Player_Despawn(struct Entity* e) {
-	DeleteSkin(e);
-	Entity_ContextLost(e);
-}
-
-
 /*########################################################################################################################*
 *------------------------------------------------------LocalPlayer--------------------------------------------------------*
 *#########################################################################################################################*/
-struct LocalPlayer LocalPlayer_Instance;
+struct LocalPlayer LocalPlayer_Instances[MAX_LOCAL_PLAYERS];
 static cc_bool hackPermMsgs;
-float LocalPlayer_JumpHeight(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static struct LocalPlayerInput* sources_head;
+static struct LocalPlayerInput* sources_tail;
+
+void LocalPlayerInput_Add(struct LocalPlayerInput* source) {
+	LinkedList_Append(source, sources_head, sources_tail);
+}
+
+void LocalPlayerInput_Remove(struct LocalPlayerInput* source) {
+	struct LocalPlayerInput* cur;
+	LinkedList_Remove(source, cur, sources_head, sources_tail);
+}
+
+float LocalPlayer_JumpHeight(struct LocalPlayer* p) {
 	return (float)PhysicsComp_CalcMaxHeight(p->Physics.JumpVel);
 }
 
-void LocalPlayer_SetInterpPosition(float t) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+void LocalPlayer_SetInterpPosition(struct LocalPlayer* p, float t) {
 	if (!(p->Hacks.WOMStyleHacks && p->Hacks.Noclip)) {
 		Vec3_Lerp(&p->Base.Position, &p->Base.prev.pos, &p->Base.next.pos, t);
 	}
 	Entity_LerpAngles(&p->Base, t);
 }
 
-static void LocalPlayer_HandleInput(float* xMoving, float* zMoving) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static void LocalPlayer_HandleInput(struct LocalPlayer* p, float* xMoving, float* zMoving) {
 	struct HacksComp* hacks = &p->Hacks;
 	struct LocalPlayerInput* input;
-
-	if (Gui.InputGrab) {
-		/* TODO: Don't always turn these off anytime a screen is opened, only do it on InputUp */
-		p->Physics.Jumping = false; hacks->FlyingUp = false; hacks->FlyingDown = false;
-		return;
-	}
+	if (Gui.InputGrab) return;
 
 	/* keyboard input, touch, joystick, etc */
-	for (input = &p->input; input; input = input->next) {
-		input->GetMovement(xMoving, zMoving);
+	for (input = sources_head; input; input = input->next) {
+		input->GetMovement(p, xMoving, zMoving);
 	}
 	*xMoving *= 0.98f; 
 	*zMoving *= 0.98f;
-
-	p->Physics.Jumping = KeyBind_IsPressed(KEYBIND_JUMP);
-	hacks->FlyingUp    = KeyBind_IsPressed(KEYBIND_FLY_UP);
-	hacks->FlyingDown  = KeyBind_IsPressed(KEYBIND_FLY_DOWN);
 
 	if (hacks->WOMStyleHacks && hacks->Enabled && hacks->CanNoclip) {
 		if (hacks->Noclip) {
 			/* need a { } block because it's a macro */
 			Vec3_Set(p->Base.Velocity, 0,0,0);
 		}
-		HacksComp_SetNoclip(hacks, KeyBind_IsPressed(KEYBIND_NOCLIP));
+		HacksComp_SetNoclip(hacks, hacks->_noclipping);
 	}
-}
-
-static void LocalPlayer_InputSet(int key, cc_bool pressed) {
-	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
-
-	if (pressed && !hacks->Enabled) return;
-	if (key == KeyBinds[KEYBIND_SPEED])      hacks->Speeding     = pressed;
-	if (key == KeyBinds[KEYBIND_HALF_SPEED]) hacks->HalfSpeeding = pressed;
-}
-
-static void LocalPlayer_InputDown(void* obj, int key, cc_bool was) {
-	/* e.g. pressing Shift in chat input shouldn't turn on speeding */
-	if (!Gui.InputGrab) LocalPlayer_InputSet(key, true);
-}
-
-static void LocalPlayer_InputUp(void* obj, int key) {
-	LocalPlayer_InputSet(key, false);
 }
 
 static void LocalPlayer_SetLocation(struct Entity* e, struct LocationUpdate* update) {
 	struct LocalPlayer* p = (struct LocalPlayer*)e;
-	LocalInterpComp_SetLocation(&p->Interp, update);
+	LocalInterpComp_SetLocation(&p->Interp, update, e);
 }
 
-static void LocalPlayer_Tick(struct Entity* e, double delta) {
+static void LocalPlayer_Tick(struct Entity* e, float delta) {
 	struct LocalPlayer* p = (struct LocalPlayer*)e;
 	struct HacksComp* hacks = &p->Hacks;
 	float xMoving = 0, zMoving = 0;
@@ -848,7 +679,7 @@ static void LocalPlayer_Tick(struct Entity* e, double delta) {
 	wasOnGround    = e->OnGround;
 
 	LocalInterpComp_AdvanceState(&p->Interp, e);
-	LocalPlayer_HandleInput(&xMoving, &zMoving);
+	LocalPlayer_HandleInput(p, &xMoving, &zMoving);
 	hacks->Floating = hacks->Noclip || hacks->Flying;
 	if (!hacks->Floating && hacks->CanBePushed) PhysicsComp_DoEntityPush(e);
 
@@ -862,74 +693,64 @@ static void LocalPlayer_Tick(struct Entity* e, double delta) {
 	PhysicsComp_PhysicsTick(&p->Physics, headingVelocity);
 
 	/* Fixes high jump, when holding down a movement key, jump, fly, then let go of fly key */
-	if (p->Hacks.Floating) e->Velocity.Y = 0.0f;
+	if (p->Hacks.Floating) e->Velocity.y = 0.0f;
 
 	e->next.pos = e->Position; e->Position = e->prev.pos;
 	AnimatedComp_Update(e, e->prev.pos, e->next.pos, delta);
-	TiltComp_Update(&p->Tilt, delta);
+	TiltComp_Update(p, &p->Tilt, delta);
 
 	Entity_CheckSkin(&p->Base);
-	SoundComp_Tick(wasOnGround);
+	SoundComp_Tick(p, wasOnGround);
 }
 
-static void LocalPlayer_RenderModel(struct Entity* e, double deltaTime, float t) {
+static void LocalPlayer_RenderModel(struct Entity* e, float delta, float t) {
 	struct LocalPlayer* p = (struct LocalPlayer*)e;
 	AnimatedComp_GetCurrent(e, t);
-	TiltComp_GetCurrent(&p->Tilt, t);
+	TiltComp_GetCurrent(p, &p->Tilt, t);
 
-	if (!Camera.Active->isThirdPerson) return;
+	if (!Camera.Active->isThirdPerson && p == Entities.CurPlayer) return;
 	Model_Render(e->Model, e);
 }
 
-static void LocalPlayer_RenderName(struct Entity* e) {
-	if (!Camera.Active->isThirdPerson) return;
-	DrawName(e);
+static cc_bool LocalPlayer_ShouldRenderName(struct Entity* e) {
+	return Camera.Active->isThirdPerson;
 }
 
 static void LocalPlayer_CheckJumpVelocity(void* obj) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+	struct LocalPlayer* p = (struct LocalPlayer*)obj;
 	if (!HacksComp_CanJumpHigher(&p->Hacks)) {
 		p->Physics.JumpVel = p->Physics.ServerJumpVel;
 	}
 }
 
-static void LocalPlayer_GetMovement(float* xMoving, float* zMoving) {
-	if (KeyBind_IsPressed(KEYBIND_FORWARD)) *zMoving -= 1;
-	if (KeyBind_IsPressed(KEYBIND_BACK))    *zMoving += 1;
-	if (KeyBind_IsPressed(KEYBIND_LEFT))    *xMoving -= 1;
-	if (KeyBind_IsPressed(KEYBIND_RIGHT))   *xMoving += 1;
-}
-
 static const struct EntityVTABLE localPlayer_VTABLE = {
 	LocalPlayer_Tick,        Player_Despawn,         LocalPlayer_SetLocation, Entity_GetColor,
-	LocalPlayer_RenderModel, LocalPlayer_RenderName
+	LocalPlayer_RenderModel, LocalPlayer_ShouldRenderName
 };
-static void LocalPlayer_Init(void) {
-	struct LocalPlayer* p   = &LocalPlayer_Instance;
+static void LocalPlayer_Init(struct LocalPlayer* p, int index) {
 	struct HacksComp* hacks = &p->Hacks;
 
 	Entity_Init(&p->Base);
 	Entity_SetName(&p->Base, &Game_Username);
 	Entity_SetSkin(&p->Base, &Game_Username);
-	Event_Register_(&UserEvents.HackPermsChanged, NULL, LocalPlayer_CheckJumpVelocity);
+	Event_Register_(&UserEvents.HackPermsChanged, p, LocalPlayer_CheckJumpVelocity);
 
-	p->input.GetMovement = LocalPlayer_GetMovement;
 	p->Collisions.Entity = &p->Base;
 	HacksComp_Init(hacks);
 	PhysicsComp_Init(&p->Physics, &p->Base);
 	TiltComp_Init(&p->Tilt);
 
-	p->Base.ModelRestrictedScale = true;
+	p->Base.Flags |= ENTITY_FLAG_MODEL_RESTRICTED_SCALE;
 	p->ReachDistance = 5.0f;
 	p->Physics.Hacks = &p->Hacks;
 	p->Physics.Collisions = &p->Collisions;
 	p->Base.VTABLE   = &localPlayer_VTABLE;
+	p->index = index;
 
 	hacks->Enabled = !Game_PureClassic && Options_GetBool(OPT_HACKS_ENABLED, true);
-	/* p->Base.Health = 20; TODO: survival mode stuff */
 	if (Game_ClassicMode) return;
 
-	hacks->SpeedMultiplier = Options_GetFloat(OPT_SPEED_FACTOR, 0.1f, 50.0f, 10.0f);
+	hacks->SpeedMultiplier = Options_GetFloat(OPT_SPEED_FACTOR,  0.1f, 50.0f, 10.0f);
 	hacks->PushbackPlacing = Options_GetBool(OPT_PUSHBACK_PLACING, false);
 	hacks->NoclipSlide     = Options_GetBool(OPT_NOCLIP_SLIDE,     false);
 	hacks->WOMStyleHacks   = Options_GetBool(OPT_WOM_STYLE_HACKS,  false);
@@ -939,23 +760,28 @@ static void LocalPlayer_Init(void) {
 	hackPermMsgs           = Options_GetBool(OPT_HACK_PERM_MSGS, true);
 }
 
-void LocalPlayer_ResetJumpVelocity(void) {
-	struct LocalPlayer* p  = &LocalPlayer_Instance;
+void LocalPlayer_ResetJumpVelocity(struct LocalPlayer* p) {
 	cc_bool higher = HacksComp_CanJumpHigher(&p->Hacks);
 
 	p->Physics.JumpVel       = higher ? p->Physics.UserJumpVel : 0.42f;
 	p->Physics.ServerJumpVel = p->Physics.JumpVel;
 }
 
-static void LocalPlayer_Reset(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static void LocalPlayer_Reset(struct LocalPlayer* p) {
 	p->ReachDistance = 5.0f;
 	Vec3_Set(p->Base.Velocity, 0,0,0);
-	LocalPlayer_ResetJumpVelocity();
+	LocalPlayer_ResetJumpVelocity(p);
 }
 
-static void LocalPlayer_OnNewMap(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static void LocalPlayers_Reset(void) {
+	int i;
+	for (i = 0; i < Game_NumStates; i++)
+	{
+		LocalPlayer_Reset(&LocalPlayer_Instances[i]);
+	}
+}
+
+static void LocalPlayer_OnNewMap(struct LocalPlayer* p) {
 	Vec3_Set(p->Base.Velocity, 0,0,0);
 	Vec3_Set(p->OldVelocity,   0,0,0);
 
@@ -965,9 +791,16 @@ static void LocalPlayer_OnNewMap(void) {
 	p->_warnedZoom    = false;
 }
 
+static void LocalPlayers_OnNewMap(void) {
+	int i;
+	for (i = 0; i < Game_NumStates; i++)
+	{
+		LocalPlayer_OnNewMap(&LocalPlayer_Instances[i]);
+	}
+}
+
 static cc_bool LocalPlayer_IsSolidCollide(BlockID b) { return Blocks.Collide[b] == COLLIDE_SOLID; }
-static void LocalPlayer_DoRespawn(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static void LocalPlayer_DoRespawn(struct LocalPlayer* p) {
 	struct LocationUpdate update;
 	struct AABB bb;
 	Vec3 spawn = p->Spawn;
@@ -983,22 +816,22 @@ static void LocalPlayer_DoRespawn(void) {
 	/* Only when player can noclip, since this can let you 'clip' to above solid blocks */
 	if (p->Hacks.CanNoclip) {
 		AABB_Make(&bb, &spawn, &p->Base.Size);
-		for (y = pos.Y; y <= World.Height; y++) {
+		for (y = pos.y; y <= World.Height; y++) {
 			spawnY = Respawn_HighestSolidY(&bb);
 
 			if (spawnY == RESPAWN_NOT_FOUND) {
-				block   = World_SafeGetBlock(pos.X, y, pos.Z);
-				height  = Blocks.Collide[block] == COLLIDE_SOLID ? Blocks.MaxBB[block].Y : 0.0f;
-				spawn.Y = y + height + ENTITY_ADJUSTMENT;
+				block   = World_SafeGetBlock(pos.x, y, pos.z);
+				height  = Blocks.Collide[block] == COLLIDE_SOLID ? Blocks.MaxBB[block].y : 0.0f;
+				spawn.y = y + height + ENTITY_ADJUSTMENT;
 				break;
 			}
-			bb.Min.Y += 1.0f; bb.Max.Y += 1.0f;
+			bb.Min.y += 1.0f; bb.Max.y += 1.0f;
 		}
 	}
 
 	/* Adjust the position to be slightly above the ground, so that */
 	/*  it's obvious to the player that they are being respawned */
-	spawn.Y += 2.0f/16.0f;
+	spawn.y += 2.0f/16.0f;
 
 	update.flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
 	update.pos   = spawn;
@@ -1009,14 +842,16 @@ static void LocalPlayer_DoRespawn(void) {
 	Vec3_Set(p->Base.Velocity, 0,0,0);
 	/* Update onGround, otherwise if 'respawn' then 'space' is pressed, you still jump into the air if onGround was true before */
 	Entity_GetBounds(&p->Base, &bb);
-	bb.Min.Y -= 0.01f; bb.Max.Y = bb.Min.Y;
+	bb.Min.y -= 0.01f; bb.Max.y = bb.Min.y;
 	p->Base.OnGround = Entity_TouchesAny(&bb, LocalPlayer_IsSolidCollide);
 }
 
-cc_bool LocalPlayer_HandleRespawn(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static cc_bool LocalPlayer_HandleRespawn(int key, struct InputDevice* device) {
+	struct LocalPlayer* p = &LocalPlayer_Instances[device->mappedIndex];
+	if (Gui.InputGrab) return false;
+	
 	if (p->Hacks.CanRespawn) {
-		LocalPlayer_DoRespawn();
+		LocalPlayer_DoRespawn(p);
 		return true;
 	} else if (!p->_warnedRespawn) {
 		p->_warnedRespawn = true;
@@ -1025,8 +860,10 @@ cc_bool LocalPlayer_HandleRespawn(void) {
 	return false;
 }
 
-cc_bool LocalPlayer_HandleSetSpawn(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static cc_bool LocalPlayer_HandleSetSpawn(int key, struct InputDevice* device) {
+	struct LocalPlayer* p = &LocalPlayer_Instances[device->mappedIndex];
+	if (Gui.InputGrab) return false;
+	
 	if (p->Hacks.CanRespawn) {
 
 		if (!p->Hacks.CanNoclip && !p->Base.OnGround) {
@@ -1036,21 +873,25 @@ cc_bool LocalPlayer_HandleSetSpawn(void) {
 
 		/* Spawn is normally centered to match vanilla Minecraft classic */
 		if (!p->Hacks.CanNoclip) {
-			p->Spawn   = p->Base.Position;
+			/* Don't want to use Position because it is interpolated between prev and next. */
+			/* This means it can be halfway between stepping up a stair and clip through the floor. */
+			p->Spawn   = p->Base.prev.pos;
 		} else {
-			p->Spawn.X = Math_Floor(p->Base.Position.X) + 0.5f;
-			p->Spawn.Y = p->Base.Position.Y;
-			p->Spawn.Z = Math_Floor(p->Base.Position.Z) + 0.5f;
+			p->Spawn.x = Math_Floor(p->Base.Position.x) + 0.5f;
+			p->Spawn.y = p->Base.Position.y;
+			p->Spawn.z = Math_Floor(p->Base.Position.z) + 0.5f;
 		}
 		
 		p->SpawnYaw   = p->Base.Yaw;
 		p->SpawnPitch = p->Base.Pitch;
 	}
-	return LocalPlayer_HandleRespawn();
+	return LocalPlayer_HandleRespawn(key, device);
 }
 
-cc_bool LocalPlayer_HandleFly(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static cc_bool LocalPlayer_HandleFly(int key, struct InputDevice* device) {
+	struct LocalPlayer* p = &LocalPlayer_Instances[device->mappedIndex];
+	if (Gui.InputGrab) return false;
+
 	if (p->Hacks.CanFly && p->Hacks.Enabled) {
 		HacksComp_SetFlying(&p->Hacks, !p->Hacks.Flying);
 		return true;
@@ -1061,11 +902,14 @@ cc_bool LocalPlayer_HandleFly(void) {
 	return false;
 }
 
-cc_bool LocalPlayer_HandleNoclip(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static cc_bool LocalPlayer_HandleNoclip(int key, struct InputDevice* device) {
+	struct LocalPlayer* p = &LocalPlayer_Instances[device->mappedIndex];
+	p->Hacks._noclipping = true;
+	if (Gui.InputGrab) return false;
+
 	if (p->Hacks.CanNoclip && p->Hacks.Enabled) {
 		if (p->Hacks.WOMStyleHacks) return true; /* don't handle this here */
-		if (p->Hacks.Noclip) p->Base.Velocity.Y = 0;
+		if (p->Hacks.Noclip) p->Base.Velocity.y = 0;
 
 		HacksComp_SetNoclip(&p->Hacks, !p->Hacks.Noclip);
 		return true;
@@ -1076,11 +920,13 @@ cc_bool LocalPlayer_HandleNoclip(void) {
 	return false;
 }
 
-cc_bool LocalPlayer_HandleJump(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+static cc_bool LocalPlayer_HandleJump(int key, struct InputDevice* device) {
+	struct LocalPlayer* p = &LocalPlayer_Instances[device->mappedIndex];
 	struct HacksComp* hacks     = &p->Hacks;
 	struct PhysicsComp* physics = &p->Physics;
 	int maxJumps;
+	if (Gui.InputGrab) return false;
+	physics->Jumping = true;
 
 	if (!p->Base.OnGround && !(hacks->Flying || hacks->Noclip)) {
 		maxJumps = hacks->CanDoubleJump && hacks->WOMStyleHacks ? 2 : 0;
@@ -1095,8 +941,90 @@ cc_bool LocalPlayer_HandleJump(void) {
 	return false;
 }
 
-cc_bool LocalPlayer_CheckCanZoom(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+
+static cc_bool LocalPlayer_TriggerHalfSpeed(int key, struct InputDevice* device) {
+	struct HacksComp* hacks = &LocalPlayer_Instances[device->mappedIndex].Hacks;
+	cc_bool touch = device->type == INPUT_DEVICE_TOUCH;
+	if (Gui.InputGrab) return false;
+
+	hacks->HalfSpeeding = (!touch || !hacks->HalfSpeeding) && hacks->Enabled;
+	return true;
+}
+
+static cc_bool LocalPlayer_TriggerSpeed(int key, struct InputDevice* device) {
+	struct HacksComp* hacks = &LocalPlayer_Instances[device->mappedIndex].Hacks;
+	cc_bool touch = device->type == INPUT_DEVICE_TOUCH;
+	if (Gui.InputGrab) return false;
+
+	hacks->Speeding = (!touch || !hacks->Speeding) && hacks->Enabled;
+	return true;
+}
+
+static void LocalPlayer_ReleaseHalfSpeed(int key, struct InputDevice* device) {
+	struct HacksComp* hacks = &LocalPlayer_Instances[device->mappedIndex].Hacks;
+	if (device->type != INPUT_DEVICE_TOUCH) hacks->HalfSpeeding = false;
+}
+
+static void LocalPlayer_ReleaseSpeed(int key, struct InputDevice* device) {
+	struct HacksComp* hacks = &LocalPlayer_Instances[device->mappedIndex].Hacks;
+	if (device->type != INPUT_DEVICE_TOUCH) hacks->Speeding = false;
+}
+
+
+static cc_bool LocalPlayer_TriggerFlyUp(int key, struct InputDevice* device) {
+	struct HacksComp* hacks = &LocalPlayer_Instances[device->mappedIndex].Hacks;
+	if (Gui.InputGrab) return false;
+	
+	hacks->FlyingUp = true;
+	return hacks->CanFly && hacks->Enabled;
+}
+
+static cc_bool LocalPlayer_TriggerFlyDown(int key, struct InputDevice* device) {
+	struct HacksComp* hacks = &LocalPlayer_Instances[device->mappedIndex].Hacks;
+	if (Gui.InputGrab) return false;
+	
+	hacks->FlyingDown = true;
+	return hacks->CanFly && hacks->Enabled;
+}
+
+static void LocalPlayer_ReleaseFlyUp(int key, struct InputDevice* device) {
+	LocalPlayer_Instances[device->mappedIndex].Hacks.FlyingUp   = false;
+}
+
+static void LocalPlayer_ReleaseFlyDown(int key, struct InputDevice* device) {
+	LocalPlayer_Instances[device->mappedIndex].Hacks.FlyingDown = false;
+}
+
+static void LocalPlayer_ReleaseJump(int key, struct InputDevice* device) {
+	LocalPlayer_Instances[device->mappedIndex].Physics.Jumping = false;
+}
+
+static void LocalPlayer_ReleaseNoclip(int key, struct InputDevice* device) {
+	LocalPlayer_Instances[device->mappedIndex].Hacks._noclipping = false;
+}
+
+static void LocalPlayer_HookBinds(void) {
+	Bind_OnTriggered[BIND_RESPAWN]   = LocalPlayer_HandleRespawn;
+	Bind_OnTriggered[BIND_SET_SPAWN] = LocalPlayer_HandleSetSpawn;
+	Bind_OnTriggered[BIND_FLY]       = LocalPlayer_HandleFly;
+	Bind_OnTriggered[BIND_NOCLIP]    = LocalPlayer_HandleNoclip;
+	Bind_OnTriggered[BIND_JUMP]      = LocalPlayer_HandleJump;
+
+	Bind_OnTriggered[BIND_HALF_SPEED] = LocalPlayer_TriggerHalfSpeed;
+	Bind_OnTriggered[BIND_SPEED]      = LocalPlayer_TriggerSpeed;
+	Bind_OnReleased[BIND_HALF_SPEED]  = LocalPlayer_ReleaseHalfSpeed;
+	Bind_OnReleased[BIND_SPEED]       = LocalPlayer_ReleaseSpeed;
+
+	Bind_OnTriggered[BIND_FLY_UP]   = LocalPlayer_TriggerFlyUp;
+	Bind_OnTriggered[BIND_FLY_DOWN] = LocalPlayer_TriggerFlyDown;
+	Bind_OnReleased[BIND_FLY_UP]    = LocalPlayer_ReleaseFlyUp;
+	Bind_OnReleased[BIND_FLY_DOWN]  = LocalPlayer_ReleaseFlyDown;
+
+	Bind_OnReleased[BIND_JUMP]    = LocalPlayer_ReleaseJump;
+	Bind_OnReleased[BIND_NOCLIP]  = LocalPlayer_ReleaseNoclip;
+}
+
+cc_bool LocalPlayer_CheckCanZoom(struct LocalPlayer* p) {
 	if (p->Hacks.CanFly) return true;
 
 	if (!p->_warnedZoom) {
@@ -1106,42 +1034,46 @@ cc_bool LocalPlayer_CheckCanZoom(void) {
 	return false;
 }
 
-void LocalPlayer_MoveToSpawn(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
-	struct LocationUpdate update;
-
-	update.flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
-	update.pos   = p->Spawn;
-	update.yaw   = p->SpawnYaw;
-	update.pitch = p->SpawnPitch;
-
-	p->Base.VTABLE->SetLocation(&p->Base, &update);
+void LocalPlayers_MoveToSpawn(struct LocationUpdate* update) {
+	struct LocalPlayer* p;
+	int i;
+	
+	for (i = 0; i < Game_NumStates; i++)
+	{
+		p = &LocalPlayer_Instances[i];
+		p->Base.VTABLE->SetLocation(&p->Base, update);
+		
+		if (update->flags & LU_HAS_POS)   p->Spawn      = update->pos;
+		if (update->flags & LU_HAS_YAW)   p->SpawnYaw   = update->yaw;
+		if (update->flags & LU_HAS_PITCH) p->SpawnPitch = update->pitch;
+	}
+	
 	/* TODO: This needs to be before new map... */
 	Camera.CurrentPos = Camera.Active->GetPosition(0.0f);
 }
 
-void LocalPlayer_CalcDefaultSpawn(void) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+void LocalPlayer_CalcDefaultSpawn(struct LocalPlayer* p, struct LocationUpdate* update) {
 	float x = (World.Width  / 2) + 0.5f; 
 	float z = (World.Length / 2) + 0.5f;
 
-	p->Spawn      = Respawn_FindSpawnPosition(x, z, p->Base.Size);
-	p->SpawnYaw   = 0.0f;
-	p->SpawnPitch = 0.0f;
+	update->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
+	update->pos   = Respawn_FindSpawnPosition(x, z, p->Base.Size);
+	update->yaw   = 0.0f;
+	update->pitch = 0.0f;
 }
 
 
 /*########################################################################################################################*
 *-------------------------------------------------------NetPlayer---------------------------------------------------------*
 *#########################################################################################################################*/
-struct NetPlayer NetPlayers_List[ENTITIES_SELF_ID];
+struct NetPlayer NetPlayers_List[MAX_NET_PLAYERS];
 
 static void NetPlayer_SetLocation(struct Entity* e, struct LocationUpdate* update) {
 	struct NetPlayer* p = (struct NetPlayer*)e;
 	NetInterpComp_SetLocation(&p->Interp, update, e);
 }
 
-static void NetPlayer_Tick(struct Entity* e, double delta) {
+static void NetPlayer_Tick(struct Entity* e, float delta) {
 	struct NetPlayer* p = (struct NetPlayer*)e;
 	NetInterpComp_AdvanceState(&p->Interp, e);
 
@@ -1149,32 +1081,36 @@ static void NetPlayer_Tick(struct Entity* e, double delta) {
 	AnimatedComp_Update(e, e->prev.pos, e->next.pos, delta);
 }
 
-static void NetPlayer_RenderModel(struct Entity* e, double deltaTime, float t) {
+static void NetPlayer_RenderModel(struct Entity* e, float delta, float t) {
 	Vec3_Lerp(&e->Position, &e->prev.pos, &e->next.pos, t);
 	Entity_LerpAngles(e, t);
 
 	AnimatedComp_GetCurrent(e, t);
 	e->ShouldRender = Model_ShouldRender(e);
+	/* Original classic only shows players up to 64 blocks away */
+	if (Game_ClassicMode) e->ShouldRender &= Model_RenderDistance(e) <= 64 * 64;
+
 	if (e->ShouldRender) Model_Render(e->Model, e);
 }
 
-static void NetPlayer_RenderName(struct Entity* e) {
+static cc_bool NetPlayer_ShouldRenderName(struct Entity* e) {
 	float distance;
 	int threshold;
-	if (!e->ShouldRender) return;
+	if (!e->ShouldRender) return false;
 
 	distance  = Model_RenderDistance(e);
 	threshold = Entities.NamesMode == NAME_MODE_ALL_UNSCALED ? 8192 * 8192 : 32 * 32;
-	if (distance <= (float)threshold) DrawName(e);
+	return distance <= (float)threshold;
 }
 
 static const struct EntityVTABLE netPlayer_VTABLE = {
 	NetPlayer_Tick,        Player_Despawn,       NetPlayer_SetLocation, Entity_GetColor,
-	NetPlayer_RenderModel, NetPlayer_RenderName
+	NetPlayer_RenderModel, NetPlayer_ShouldRenderName
 };
 void NetPlayer_Init(struct NetPlayer* p) {
 	Mem_Set(p, 0, sizeof(struct NetPlayer));
 	Entity_Init(&p->Base);
+	p->Base.Flags |= ENTITY_FLAG_CLASSIC_ADJUST;
 	p->Base.VTABLE = &netPlayer_VTABLE;
 }
 
@@ -1183,10 +1119,8 @@ void NetPlayer_Init(struct NetPlayer* p) {
 *---------------------------------------------------Entities component----------------------------------------------------*
 *#########################################################################################################################*/
 static void Entities_Init(void) {
-	Event_Register_(&GfxEvents.ContextLost,  NULL, Entities_ContextLost);
-	Event_Register_(&ChatEvents.FontChanged, NULL, Entities_ChatFontChanged);
-	Event_Register_(&InputEvents.Down,       NULL, LocalPlayer_InputDown);
-	Event_Register_(&InputEvents.Up,         NULL, LocalPlayer_InputUp);
+	int i;
+	Event_Register_(&GfxEvents.ContextLost, NULL, Entities_ContextLost);
 
 	Entities.NamesMode = Options_GetEnum(OPT_NAMES_MODE, NAME_MODE_HOVERED,
 		NameMode_Names, Array_Elems(NameMode_Names));
@@ -1196,22 +1130,31 @@ static void Entities_Init(void) {
 		ShadowMode_Names, Array_Elems(ShadowMode_Names));
 	if (Game_ClassicMode) Entities.ShadowsMode = SHADOW_MODE_NONE;
 
-	Entities.List[ENTITIES_SELF_ID] = &LocalPlayer_Instance.Base;
-	LocalPlayer_Init();
+	for (i = 0; i < Game_NumStates; i++)
+	{
+		LocalPlayer_Init(&LocalPlayer_Instances[i], i);
+		Entities.List[MAX_NET_PLAYERS + i] = &LocalPlayer_Instances[i].Base;
+	}
+	for (; i < MAX_LOCAL_PLAYERS; i++)
+	{
+		Entities.List[MAX_NET_PLAYERS + i] = NULL;
+	}
+	Entities.CurPlayer = &LocalPlayer_Instances[0];
+	LocalPlayer_HookBinds();
 }
 
 static void Entities_Free(void) {
 	int i;
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		if (!Entities.List[i]) continue;
-		Entities_Remove((EntityID)i);
+	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
+	{
+		Entities_Remove(i);
 	}
-	Gfx_DeleteTexture(&ShadowComponent_ShadowTex);
+	sources_head = NULL;
 }
 
 struct IGameComponent Entities_Component = {
 	Entities_Init,  /* Init  */
 	Entities_Free,  /* Free  */
-	LocalPlayer_Reset,    /* Reset */
-	LocalPlayer_OnNewMap, /* OnNewMap */
+	LocalPlayers_Reset,    /* Reset */
+	LocalPlayers_OnNewMap, /* OnNewMap */
 };

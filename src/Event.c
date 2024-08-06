@@ -1,7 +1,7 @@
 #include "Event.h"
 #include "Logger.h"
 
-int EventAPIVersion = 3;
+int EventAPIVersion = 4;
 struct _EntityEventsList        EntityEvents;
 struct _TabListEventsList       TabListEvents;
 struct _TextureEventsList       TextureEvents;
@@ -13,6 +13,7 @@ struct _ChatEventsList          ChatEvents;
 struct _WindowEventsList        WindowEvents;
 struct _InputEventsList         InputEvents;
 struct _PointerEventsList       PointerEvents;
+struct _ControllerEventsList    ControllerEvents;
 struct _NetEventsList           NetEvents;
 
 void Event_Register(struct Event_Void* handlers, void* obj, Event_Void_Callback handler) {
@@ -81,6 +82,7 @@ void Event_UnregisterAll(void) {
 	WorldEvents.Loading.Count   = 0;
 	WorldEvents.MapLoaded.Count = 0;
 	WorldEvents.EnvVarChanged.Count = 0;
+	WorldEvents.LightingModeChanged.Count = 0;
 
 	ChatEvents.FontChanged.Count    = 0;
 	ChatEvents.ChatReceived.Count   = 0;
@@ -97,15 +99,19 @@ void Event_UnregisterAll(void) {
 	WindowEvents.Redrawing.Count    = 0;
 
 	InputEvents.Press.Count = 0;
-	InputEvents.Down.Count  = 0;
-	InputEvents.Up.Count    = 0;
+	InputEvents._down.Count = 0;
+	InputEvents._up.Count   = 0;
 	InputEvents.Wheel.Count = 0;
 	InputEvents.TextChanged.Count = 0;
+	InputEvents.Down2.Count = 0;
+	InputEvents.Up2.Count   = 0;
 
 	PointerEvents.Moved.Count = 0;
 	PointerEvents.Down.Count  = 0;
 	PointerEvents.Up.Count    = 0;
 	PointerEvents.RawMoved.Count = 0;
+	
+	ControllerEvents.AxisUpdate.Count = 0;
 
 	NetEvents.Connected.Count    = 0;
 	NetEvents.Disconnected.Count = 0;
@@ -154,10 +160,10 @@ void Event_RaiseChat(struct Event_Chat* handlers, const cc_string* msg, int msgT
 	}
 }
 
-void Event_RaiseInput(struct Event_Input* handlers, int key, cc_bool repeating) {
+void Event_RaiseInput(struct Event_Input* handlers, int key, cc_bool repeating, struct InputDevice* device) {
 	int i;
 	for (i = 0; i < handlers->Count; i++) {
-		handlers->Handlers[i](handlers->Objs[i], key, repeating);
+		handlers->Handlers[i](handlers->Objs[i], key, repeating, device);
 	}
 }
 
@@ -175,9 +181,23 @@ void Event_RaiseRawMove(struct Event_RawMove* handlers, float xDelta, float yDel
 	}
 }
 
+void Event_RaisePadAxis(struct Event_PadAxis* handlers, int port, int axis, float x, float y) {
+	int i;
+	for (i = 0; i < handlers->Count; i++) {
+		handlers->Handlers[i](handlers->Objs[i], port, axis, x, y);
+	}
+}
+
 void Event_RaisePluginMessage(struct Event_PluginMessage* handlers, cc_uint8 channel, cc_uint8* data) {
 	int i;
 	for (i = 0; i < handlers->Count; i++) {
 		handlers->Handlers[i](handlers->Objs[i], channel, data);
+	}
+}
+
+void Event_RaiseLightingMode(struct Event_LightingMode* handlers, cc_uint8 oldMode, cc_bool fromServer) {
+	int i;
+	for (i = 0; i < handlers->Count; i++) {
+		handlers->Handlers[i](handlers->Objs[i], oldMode, fromServer);
 	}
 }

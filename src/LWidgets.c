@@ -19,20 +19,58 @@ static int oneX, twoX, fourX;
 static int oneY, twoY, fourY;
 
 void LWidget_CalcOffsets(void) {
-	oneX = Display_ScaleX(1); twoX = oneX * 2; fourX = oneX * 4;
-	oneY = Display_ScaleY(1); twoY = oneY * 2; fourY = oneY * 4;
+	oneX = Display_ScaleX(1);
+	oneY = Display_ScaleY(1);
+
+	if (oneX < 1) { oneX = 1; }
+	if (oneY < 1) { oneY = 1; }
+
+	twoX = oneX * 2; fourX = oneX * 4;
+	twoY = oneY * 2; fourY = oneY * 4;
 
 	flagXOffset  = Display_ScaleX(2);
 	flagYOffset  = Display_ScaleY(6);
+}
+
+static void LWidget_DrawInsetBorder(struct Context2D* ctx, BitmapCol color, int insetX, int insetY,
+									int x, int y, int width, int height) {
+	Context2D_Clear(ctx, color,
+					x + insetX,         y,
+					width - 2 * insetX, insetY);
+	Context2D_Clear(ctx, color,
+					x + insetX,         y + height - insetY,
+					width - 2 * insetX, insetY);
+	Context2D_Clear(ctx, color,
+					x,                  y + insetY,
+					insetX,             height - 2 * insetY);
+	Context2D_Clear(ctx, color,
+					x + width - insetX, y + insetY,
+					insetX,             height - 2 * insetY);
+}
+
+void LWidget_DrawBorder(struct Context2D* ctx, BitmapCol color, int borderX, int borderY,
+									int x, int y, int width, int height) {
+	Context2D_Clear(ctx, color,
+					x,         y,
+					width, borderY);
+	Context2D_Clear(ctx, color,
+					x,         y + height - borderY,
+					width, borderY);
+	Context2D_Clear(ctx, color,
+					x,                   y,
+					borderX,             height);
+	Context2D_Clear(ctx, color,
+					x + width - borderX, y,
+					borderX,             height);
 }
 
 
 /*########################################################################################################################*
 *------------------------------------------------------ButtonWidget-------------------------------------------------------*
 *#########################################################################################################################*/
-static void LButton_DrawBase(struct Context2D* ctx, int x, int y, int width, int height, cc_bool hovered) {
-	BitmapCol color = hovered ? Launcher_Theme.ButtonForeActiveColor 
-							  : Launcher_Theme.ButtonForeColor;
+static void LButton_DrawBase(struct Context2D* ctx, int x, int y, int width, int height, cc_bool active) {
+	BitmapCol color = active ? Launcher_Theme.ButtonForeActiveColor 
+							 : Launcher_Theme.ButtonForeColor;
 
 	if (Launcher_Theme.ClassicBackground) {
 		Gradient_Noise(ctx, color, 8,
@@ -48,31 +86,18 @@ static void LButton_DrawBase(struct Context2D* ctx, int x, int y, int width, int
 static void LButton_DrawBorder(struct Context2D* ctx, int x, int y, int width, int height) {
 	BitmapCol backColor = Launcher_Theme.ButtonBorderColor;
 #ifdef CC_BUILD_IOS
-	int xoff = 0; /* TODO temp hack */
+	LWidget_DrawBorder(ctx,      backColor, oneX, oneY, x, y, width, height);
 #else
-	int xoff = oneX;
+	LWidget_DrawInsetBorder(ctx, backColor, oneX, oneY, x, y, width, height);
 #endif
-
-	Context2D_Clear(ctx, backColor, 
-					x + xoff,         y,
-					width - 2 * xoff, oneY);
-	Context2D_Clear(ctx, backColor,
-					x + xoff,         y + height - oneY,
-					width - 2 * xoff, oneY);
-	Context2D_Clear(ctx, backColor,
-					x,                y + oneY,
-					oneX,             height - twoY);
-	Context2D_Clear(ctx, backColor,
-					x + width - oneX, y + oneY,
-					oneX,             height - twoY);
 }
 
-static void LButton_DrawHighlight(struct Context2D* ctx, int x, int y, int width, int height, cc_bool hovered) {
+static void LButton_DrawHighlight(struct Context2D* ctx, int x, int y, int width, int height, cc_bool active) {
 	BitmapCol activeColor = BitmapColor_RGB(189, 198, 255);
 	BitmapCol color       = Launcher_Theme.ButtonHighlightColor;
 
 	if (Launcher_Theme.ClassicBackground) {
-		if (hovered) color = activeColor;
+		if (active) color = activeColor;
 
 		Context2D_Clear(ctx, color,
 						x + twoX,      y + oneY,
@@ -80,17 +105,17 @@ static void LButton_DrawHighlight(struct Context2D* ctx, int x, int y, int width
 		Context2D_Clear(ctx, color,
 						x + oneX,      y + twoY,
 						oneX,          height - fourY);
-	} else if (!hovered) {
+	} else if (!active) {
 		Context2D_Clear(ctx, color,
 						x + twoX,      y + oneY,
 						width - fourX, oneY);
 	}
 }
 
-void LButton_DrawBackground(struct Context2D* ctx, int x, int y, int width, int height, cc_bool hovered) {
-	LButton_DrawBase(     ctx, x, y, width, height, hovered);
+void LButton_DrawBackground(struct Context2D* ctx, int x, int y, int width, int height, cc_bool active) {
+	LButton_DrawBase(     ctx, x, y, width, height, active);
 	LButton_DrawBorder(   ctx, x, y, width, height);
-	LButton_DrawHighlight(ctx, x, y, width, height, hovered);
+	LButton_DrawHighlight(ctx, x, y, width, height, active);
 }
 
 static void LButton_Draw(void* widget) {
@@ -99,27 +124,31 @@ static void LButton_Draw(void* widget) {
 }
 
 static void LButton_Hover(void* w, int idx, cc_bool wasOver) {
-	/* only need to redraw when changing from unhovered to hovered */
-	if (!wasOver) LBackend_MarkDirty(w);
+	/* only need to redraw when changing from unhovered to active */
+	if (!wasOver) LBackend_NeedsRedraw(w);
 }
 
-static void LButton_Unhover(void* w) {
-	LBackend_MarkDirty(w);
-}
+static void LButton_Unhover(void* w) { LBackend_NeedsRedraw(w); }
+static void LButton_OnSelect(void* w,   int idx, cc_bool wasSelected) { LBackend_NeedsRedraw(w); }
+static void LButton_OnUnselect(void* w, int idx) { LBackend_NeedsRedraw(w); }
 
 static const struct LWidgetVTABLE lbutton_VTABLE = {
 	LButton_Draw, NULL,
-	NULL, NULL,                     /* Key    */
-	LButton_Hover, LButton_Unhover, /* Hover  */
-	NULL, NULL                      /* Select */
+	NULL, NULL,                          /* Key    */
+	LButton_Hover,    LButton_Unhover,   /* Hover  */
+	LButton_OnSelect, LButton_OnUnselect /* Select */
 };
-void LButton_Init(struct LButton* w, int width, int height, const char* text, const struct LLayout* layouts) {
+void LButton_Add(void* screen, struct LButton* w, int width, int height, const char* text, 
+					LWidgetFunc onClick, const struct LLayout* layouts) {
 	w->VTABLE  = &lbutton_VTABLE;
 	w->type    = LWIDGET_BUTTON;
+	w->OnClick = onClick;
 	w->layouts = layouts;
-	w->tabSelectable = true;
+	w->autoSelectable = true;
+
 	LBackend_ButtonInit(w, width, height);
 	LButton_SetConst(w, text);
+	LScreen_AddWidget(screen, w);
 }
 
 void LButton_SetConst(struct LButton* w, const char* text) {
@@ -142,14 +171,17 @@ static const struct LWidgetVTABLE lcheckbox_VTABLE = {
 	NULL, NULL, /* Hover  */
 	NULL, NULL  /* Select */
 };
-void LCheckbox_Init(struct LCheckbox* w, const char* text, const struct LLayout* layouts) {
+void LCheckbox_Add(void* screen, struct LCheckbox* w, const char* text, 
+					LCheckboxChanged onChanged, const struct LLayout* layouts) {
 	w->VTABLE  = &lcheckbox_VTABLE;
 	w->type    = LWIDGET_CHECKBOX;
 	w->layouts = layouts;
-	w->tabSelectable = true;
+	w->autoSelectable = true;
+	w->ValueChanged   = onChanged;
 
 	w->text = String_FromReadonly(text);
 	LBackend_CheckboxInit(w);
+	LScreen_AddWidget(screen, w);
 }
 
 void LCheckbox_Set(struct LCheckbox* w, cc_bool value) {
@@ -247,23 +279,25 @@ static void LInput_Delete(struct LInput* w) {
 	LBackend_InputUpdate(w);
 }
 
-static void LInput_KeyDown(void* widget, int key, cc_bool was) {
+static cc_bool LInput_KeyDown(void* widget, int key, cc_bool was, struct InputDevice* device) {
 	struct LInput* w = (struct LInput*)widget;
-	if (key == KEY_BACKSPACE) {
+	if (key == CCKEY_BACKSPACE) {
 		LInput_Backspace(w);
-	} else if (key == KEY_DELETE) {
+	} else if (key == CCKEY_DELETE) {
 		LInput_Delete(w);
 	} else if (key == INPUT_CLIPBOARD_COPY) {
 		if (w->text.length) Clipboard_SetText(&w->text);
 	} else if (key == INPUT_CLIPBOARD_PASTE) {
 		LInput_CopyFromClipboard(w);
-	} else if (key == KEY_ESCAPE) {
+	} else if (key == device->escapeButton) {
 		if (w->text.length) LInput_SetString(w, &String_Empty);
-	} else if (key == KEY_LEFT) {
+	} else if (key == device->leftButton) {
 		LInput_AdvanceCaretPos(w, false);
-	} else if (key == KEY_RIGHT) {
+	} else if (key == device->rightButton) {
 		LInput_AdvanceCaretPos(w, true);
-	}
+	} else { return false; }
+
+	return true;
 }
 
 static cc_bool LInput_CanAppend(struct LInput* w, char c) {
@@ -312,17 +346,23 @@ static const struct LWidgetVTABLE linput_VTABLE = {
 	LInput_Select, LInput_Unselect, /* Select */
 	NULL, LInput_TextChanged        /* TextChanged */
 };
-void LInput_Init(struct LInput* w, int width, const char* hintText, const struct LLayout* layouts) {
+void LInput_Add(void* screen, struct LInput* w, int width, const char* hintText, 
+				const struct LLayout* layouts) {
 	w->VTABLE  = &linput_VTABLE;
 	w->type    = LWIDGET_INPUT;
-	w->tabSelectable = true;
+	w->autoSelectable = true;
 	w->opaque  = true;
 	w->layouts = layouts;
-	String_InitArray(w->text, w->_textBuffer);
+
+	/* Preserve existing input across Add calls */
+	if (!w->text.buffer) {
+		String_InitArray(w->text, w->_textBuffer);
+	}
 	
 	w->hintText = hintText;
 	w->caretPos = -1;
 	LBackend_InputInit(w, width);
+	LScreen_AddWidget(screen, w);
 }
 
 void LInput_SetText(struct LInput* w, const cc_string* text) {
@@ -367,7 +407,8 @@ static const struct LWidgetVTABLE llabel_VTABLE = {
 	NULL, NULL, /* Hover  */
 	NULL, NULL  /* Select */
 };
-void LLabel_Init(struct LLabel* w, const char* text, const struct LLayout* layouts) {
+void LLabel_Add(void* screen, struct LLabel* w, const char* text, 
+				const struct LLayout* layouts) {
 	w->VTABLE  = &llabel_VTABLE;
 	w->type    = LWIDGET_LABEL;
 	w->layouts = layouts;
@@ -375,6 +416,7 @@ void LLabel_Init(struct LLabel* w, const char* text, const struct LLayout* layou
 	String_InitArray(w->text, w->_textBuffer);
 	LBackend_LabelInit(w);
 	LLabel_SetConst(w, text);
+	LScreen_AddWidget(screen, w);
 }
 
 void LLabel_SetText(struct LLabel* w, const cc_string* text) {
@@ -403,11 +445,14 @@ static const struct LWidgetVTABLE lline_VTABLE = {
 	NULL, NULL, /* Hover  */
 	NULL, NULL  /* Select */
 };
-void LLine_Init(struct LLine* w, int width, const struct LLayout* layouts) {
+void LLine_Add(void* screen, struct LLine* w, int width, 
+				const struct LLayout* layouts) {
 	w->VTABLE  = &lline_VTABLE;
 	w->type    = LWIDGET_LINE;
 	w->layouts = layouts;
+
 	LBackend_LineInit(w, width);
+	LScreen_AddWidget(screen, w);
 }
 
 #define CLASSIC_LINE_COLOR BitmapColor_RGB(128, 128, 128)
@@ -430,13 +475,16 @@ static const struct LWidgetVTABLE lslider_VTABLE = {
 	NULL, NULL, /* Hover  */
 	NULL, NULL  /* Select */
 };
-void LSlider_Init(struct LSlider* w, int width, int height, BitmapCol color, const struct LLayout* layouts) {
+void LSlider_Add(void* screen, struct LSlider* w, int width, int height, BitmapCol color, 
+				const struct LLayout* layouts) {
 	w->VTABLE  = &lslider_VTABLE;
 	w->type    = LWIDGET_SLIDER;
 	w->color   = color;
 	w->opaque  = true;
 	w->layouts = layouts;
+
 	LBackend_SliderInit(w, width, height);
+	LScreen_AddWidget(screen, w);
 }
 
 void LSlider_SetProgress(struct LSlider* w, int progress) {
@@ -560,26 +608,28 @@ void LTable_RowClick(struct LTable* w, int row) {
 	w->_lastClick = now;
 }
 
-cc_bool LTable_HandlesKey(int key) {
-	return key == KEY_UP || key == KEY_DOWN || key == KEY_PAGEUP || key == KEY_PAGEDOWN;
+cc_bool LTable_HandlesKey(int key, struct InputDevice* device) {
+	return key == device->upButton   || key == device->pageUpButton ||
+		   key == device->downButton || key == device->pageDownButton;
 }
 
-static void LTable_KeyDown(void* widget, int key, cc_bool was) {
+static cc_bool LTable_KeyDown(void* widget, int key, cc_bool was, struct InputDevice* device) {
 	struct LTable* w = (struct LTable*)widget;
 	int index = LTable_GetSelectedIndex(w);
 
-	if (key == KEY_UP) {
+	if (key == device->upButton) {
 		index--;
-	} else if (key == KEY_DOWN) {
+	} else if (key == device->downButton) {
 		index++;
-	} else if (key == KEY_PAGEUP) {
+	} else if (key == device->pageUpButton) {
 		index -= w->visibleRows;
-	} else if (key == KEY_PAGEDOWN) {
+	} else if (key == device->pageDownButton) {
 		index += w->visibleRows;
-	} else { return; }
+	} else { return false; }
 
 	w->_lastRow = -1;
 	LTable_SetSelectedTo(w, index);
+	return true;
 }
 
 static void LTable_MouseDown(void* widget, int idx, cc_bool wasOver) {
@@ -601,7 +651,7 @@ static void LTable_MouseWheel(void* widget, float delta) {
 	struct LTable* w = (struct LTable*)widget;
 	w->topRow -= Utils_AccumulateWheelDelta(&w->_wheelAcc, delta);
 	LTable_ClampTopRow(w);
-	LBackend_MarkDirty(w);
+	LBackend_NeedsRedraw(w);
 	w->_lastRow = -1;
 }
 
@@ -617,7 +667,8 @@ static const struct LWidgetVTABLE ltable_VTABLE = {
 	LTable_MouseDown, LTable_MouseUp, /* Select */
 	LTable_MouseWheel,      /* Wheel */
 };
-void LTable_Init(struct LTable* w, const struct LLayout* layouts) {
+void LTable_Add(void* screen, struct LTable* w, 
+				const struct LLayout* layouts) {
 	int i;
 	w->VTABLE     = &ltable_VTABLE;
 	w->type       = LWIDGET_TABLE;
@@ -631,6 +682,7 @@ void LTable_Init(struct LTable* w, const struct LLayout* layouts) {
 		w->columns[i].width = Display_ScaleX(w->columns[i].width);
 	}
 	LBackend_TableInit(w);
+	LScreen_AddWidget(screen, w);
 }
 
 void LTable_Reset(struct LTable* w) {
@@ -721,14 +773,14 @@ void LTable_ShowSelected(struct LTable* w) {
 	LTable_ClampTopRow(w);
 }
 
-BitmapCol LTable_RowColor(struct ServerInfo* entry, int row, cc_bool selected) {
+BitmapCol LTable_RowColor(int row, cc_bool selected, cc_bool featured) {
 	BitmapCol featSelColor  = BitmapColor_RGB( 50,  53,  0);
 	BitmapCol featuredColor = BitmapColor_RGB(101, 107,  0);
 	BitmapCol selectedColor = BitmapColor_RGB( 40,  40, 40);
 
-	if (entry && entry->featured) {
+	if (featured) {
 		return selected ? featSelColor : featuredColor;
-	} else if (entry && selected) {
+	} else if (selected) {
 		return selectedColor;
 	}
 

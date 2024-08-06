@@ -67,7 +67,7 @@ int Ping_NextPingId(void) {
 
 	head = (head + 1) % Array_Elems(ping_entries);
 	ping_entries[head].id   = next;
-	ping_entries[head].sent = DateTime_CurrentUTC_MS();
+	ping_entries[head].sent = Stopwatch_Measure();
 	ping_entries[head].recv = 0;
 	
 	ping_head = head;
@@ -79,25 +79,27 @@ void Ping_Update(int id) {
 	for (i = 0; i < Array_Elems(ping_entries); i++) {
 		if (ping_entries[i].id != id) continue;
 
-		ping_entries[i].recv = DateTime_CurrentUTC_MS();
+		ping_entries[i].recv = Stopwatch_Measure();
 		return;
 	}
 }
 
 int Ping_AveragePingMS(void) {
-	int i, measures = 0, totalMs = 0;
+	int i, measures = 0, totalMs;
+	cc_int64 total = 0;
 
 	for (i = 0; i < Array_Elems(ping_entries); i++) {
 		struct PingEntry entry = ping_entries[i];
 		if (!entry.sent || !entry.recv) continue;
 	
-		totalMs += (int)(entry.recv - entry.sent);
+		total += entry.recv - entry.sent;
 		measures++;
 	}
-
 	if (!measures) return 0;
-	/* (recv - send) is time for packet to be sent to server and then sent back. */
-	/* However for ping, only want time to send data to server, so half the total. */
+
+	totalMs = Stopwatch_ElapsedMS(0, total);
+	/* (recv - send) is average time for packet to be sent to server and then sent back. */
+	/* However for ping, only want average time to send data to server, so half the total. */
 	totalMs /= 2;
 	return totalMs / measures;
 }
@@ -117,8 +119,9 @@ cc_string SP_AutoloadMap = String_FromArray(autoloadBuffer);
 static void SPConnection_BeginConnect(void) {
 	static const cc_string logName = String_FromConst("Singleplayer");
 	RNGState rnd;
+	int horSize, verSize;
 	Chat_SetLogName(&logName);
-	Game_UseCPEBlocks = Game_UseCPE;
+	Game_UseCPEBlocks = Game_Version.HasCPE;
 
 	/* For when user drops a map file onto ClassiCube.exe */
 	if (SP_AutoloadMap.length) {
@@ -127,10 +130,28 @@ static void SPConnection_BeginConnect(void) {
 
 	Random_SeedFromCurrentTime(&rnd);
 	World_NewMap();
-	World_SetDimensions(128, 64, 128);
 
-	Gen_Vanilla = true;
-	Gen_Seed    = Random_Next(&rnd, Int32_MaxValue);
+#if defined CC_BUILD_NDS || defined CC_BUILD_PS1 || defined CC_BUILD_SATURN || defined CC_BUILD_MACCLASSIC
+	horSize = 16;
+	verSize = 16;
+#elif defined CC_BUILD_LOWMEM
+	horSize = 64;
+	verSize = 64;
+#else
+	horSize = Game_ClassicMode ? 256 : 128;
+	verSize = 64;
+#endif
+	World_SetDimensions(horSize, verSize, horSize);
+
+#if defined CC_BUILD_N64 || defined CC_BUILD_NDS || defined CC_BUILD_PS1 || defined CC_BUILD_SATURN
+	Gen_Active = &FlatgrassGen;
+#else
+	Gen_Active = &NotchyGen;
+#endif
+
+	Gen_Seed   = Random_Next(&rnd, Int32_MaxValue);
+	Gen_Start();
+
 	GeneratingScreen_Show();
 }
 
@@ -208,11 +229,13 @@ static void SPConnection_Init(void) {
 /*########################################################################################################################*
 *--------------------------------------------------Multiplayer connection-------------------------------------------------*
 *#########################################################################################################################*/
-static cc_socket net_socket;
+static cc_socket net_socket = -1;
+static cc_result net_writeFailure;
+static void OnClose(void);
+
+#ifdef CC_BUILD_NETWORKING
 static cc_uint8  net_readBuffer[4096 * 5];
 static cc_uint8* net_readCurrent;
-
-static cc_result net_writeFailure;
 static double net_lastPacket;
 static cc_uint8 lastOpcode;
 
@@ -220,7 +243,6 @@ static cc_bool net_connecting;
 static double net_connectTimeout;
 #define NET_TIMEOUT_SECS 15
 
-static void OnClose(void);
 static void MPConnection_FinishConnect(void) {
 	net_connecting = false;
 	Event_RaiseVoid(&NetEvents.Connected);
@@ -247,7 +269,7 @@ static void MPConnection_FailConnect(cc_result result) {
 	String_InitArray(msg, msgBuffer);
 
 	if (result) {
-		String_Format3(&msg, "Error connecting to %s:%i: %i" _NL, &Server.Address, &Server.Port, &result);
+		String_Format3(&msg, "Error connecting to %s:%i: %e" _NL, &Server.Address, &Server.Port, &result);
 		Logger_Log(&msg);
 	}
 	MPConnection_Fail(&reason);
@@ -271,7 +293,10 @@ static void MPConnection_TickConnect(void) {
 }
 
 static void MPConnection_BeginConnect(void) {
+	static const cc_string invalid_reason = String_FromConst("Invalid IP address");
 	cc_string title; char titleBuffer[STRING_SIZE];
+	cc_sockaddr addrs[SOCKET_MAX_ADDRS];
+	int numValidAddrs;
 	cc_result res;
 	String_InitArray(title, titleBuffer);
 
@@ -283,11 +308,18 @@ static void MPConnection_BeginConnect(void) {
 	Blocks.CanPlace[BLOCK_STILL_WATER] = false; Blocks.CanDelete[BLOCK_STILL_WATER] = false;
 	Blocks.CanPlace[BLOCK_BEDROCK] = false;     Blocks.CanDelete[BLOCK_BEDROCK] = false;
 	
-	res = Socket_Connect(&net_socket, &Server.Address, Server.Port);
+	res = Socket_ParseAddress(&Server.Address, Server.Port, addrs, &numValidAddrs);
 	if (res == ERR_INVALID_ARGUMENT) {
-		static const cc_string reason = String_FromConst("Invalid IP address");
-		MPConnection_Fail(&reason);
-	} else if (res && res != ReturnCode_SocketInProgess && res != ReturnCode_SocketWouldBlock) {
+		MPConnection_Fail(&invalid_reason); return;
+	} else if (res) {
+		MPConnection_FailConnect(res); return;
+	}
+
+	res = Socket_Create(&net_socket, &addrs[0], true);
+	if (res) { MPConnection_FailConnect(res); return; }
+	res = Socket_Connect(net_socket, &addrs[0]);
+
+	if (res && res != ReturnCode_SocketInProgess && res != ReturnCode_SocketWouldBlock) {
 		MPConnection_FailConnect(res);
 	} else {
 		Server.Disconnected = false;
@@ -329,7 +361,7 @@ static void MPConnection_Disconnect(void) {
 static void DisconnectReadFailed(cc_result res) {
 	cc_string msg; char msgBuffer[STRING_SIZE * 2];
 	String_InitArray(msg, msgBuffer);
-	String_Format3(&msg, "Error reading from %s:%i: %i" _NL, &Server.Address, &Server.Port, &res);
+	String_Format3(&msg, "Error reading from %s:%i: %e" _NL, &Server.Address, &Server.Port, &res);
 
 	Logger_Log(&msg);
 	MPConnection_Disconnect();
@@ -345,8 +377,9 @@ static void DisconnectInvalidOpcode(cc_uint8 opcode) {
 }
 
 static void MPConnection_Tick(struct ScheduledTask* task) {
-	cc_uint8* readEnd;
 	Net_Handler handler;
+	cc_uint8* readEnd;
+	cc_uint8* readCur;
 	cc_uint32 read;
 	int i, remaining;
 	cc_result res;
@@ -369,42 +402,43 @@ static void MPConnection_Tick(struct ScheduledTask* task) {
 		/* TODO: Should this be checked unconditonally instead of just when read = 0 ? */
 		if (net_lastPacket + 30 < Game.Time) { MPConnection_Disconnect(); return; }
 	} else {
-		readEnd         = net_readCurrent + read;
-		net_lastPacket  = Game.Time;
-		net_readCurrent = net_readBuffer;
+		readCur        = net_readBuffer;
+		readEnd        = net_readCurrent + read;
+		net_lastPacket = Game.Time;
 
-		while (net_readCurrent < readEnd) {
-			cc_uint8 opcode = net_readCurrent[0];
+		while (readCur < readEnd) {
+			cc_uint8 opcode = readCur[0];
 
 			/* Workaround for older D3 servers which wrote one byte too many for HackControl packets */
 			if (cpe_needD3Fix && lastOpcode == OPCODE_HACK_CONTROL && (opcode == 0x00 || opcode == 0xFF)) {
 				Platform_LogConst("Skipping invalid HackControl byte from D3 server");
-				net_readCurrent++;
-				LocalPlayer_ResetJumpVelocity();
+				readCur++;
+				LocalPlayer_ResetJumpVelocity(Entities.CurPlayer);
 				continue;
 			}
 
-			if (net_readCurrent + Protocol.Sizes[opcode] > readEnd) break;
+			if (readCur + Protocol.Sizes[opcode] > readEnd) break;
 			handler = Protocol.Handlers[opcode];
 			if (!handler) { DisconnectInvalidOpcode(opcode); return; }
 
 			lastOpcode = opcode;
-			handler(net_readCurrent + 1); /* skip opcode */
-			net_readCurrent += Protocol.Sizes[opcode];
+			handler(readCur + 1); /* skip opcode */
+			readCur += Protocol.Sizes[opcode];
 		}
 
 		/* Protocol packets might be split up across TCP packets */
 		/* If so, copy last few unprocessed bytes back to beginning of buffer */
 		/* These bytes are then later combined with subsequently read TCP packet data */
-		remaining = (int)(readEnd - net_readCurrent);
-		for (i = 0; i < remaining; i++) {
-			net_readBuffer[i] = net_readCurrent[i];
+		remaining = (int)(readEnd - readCur);
+		for (i = 0; i < remaining; i++) 
+		{
+			net_readBuffer[i] = readCur[i];
 		}
 		net_readCurrent = net_readBuffer + remaining;
 	}
 
 	if (net_writeFailure) {
-		Platform_Log1("Error from send: %i", &net_writeFailure);
+		Platform_Log1("Error from send: %e", &net_writeFailure);
 		MPConnection_Disconnect(); return;
 	}
 
@@ -450,15 +484,22 @@ static void MPConnection_Init(void) {
 	Server.SendData     = MPConnection_SendData;
 	net_readCurrent     = net_readBuffer;
 }
+#else
+static void MPConnection_Init(void) { SPConnection_Init(); }
+#endif
 
 
+/*########################################################################################################################*
+*---------------------------------------------------Component interface---------------------------------------------------*
+*#########################################################################################################################*/
 static void OnNewMap(void) {
 	int i;
 	if (Server.IsSinglePlayer) return;
 
 	/* wipe all existing entities */
-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
-		Protocol_RemoveEntity((EntityID)i);
+	for (i = 0; i < MAX_NET_PLAYERS; i++) 
+	{
+		Entities_Remove(i);
 	}
 }
 
@@ -475,6 +516,7 @@ static void OnInit(void) {
 
 	ScheduledTask_Add(GAME_NET_TICKS, Server.Tick);
 	String_AppendConst(&Server.AppName, GAME_APP_NAME);
+	String_AppendConst(&Server.AppName, Platform_AppNameSuffix);
 
 #ifdef CC_BUILD_WEB
 	if (!Input_TouchMode) return;

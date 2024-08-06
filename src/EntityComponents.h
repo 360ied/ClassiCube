@@ -2,12 +2,15 @@
 #define CC_ENTITY_COMPONENTS_H
 #include "Vectors.h"
 #include "Constants.h"
+CC_BEGIN_HEADER
+
 /* Various components for entities.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 struct Entity;
 struct LocationUpdate;
+struct LocalPlayer;
 
 /* Entity component that performs model animation depending on movement speed and time */
 struct AnimatedComp {
@@ -20,7 +23,7 @@ struct AnimatedComp {
 };
 
 void AnimatedComp_Init(struct AnimatedComp* anim);
-void AnimatedComp_Update(struct Entity* entity, Vec3 oldPos, Vec3 newPos, double delta);
+void AnimatedComp_Update(struct Entity* entity, Vec3 oldPos, Vec3 newPos, float delta);
 void AnimatedComp_GetCurrent(struct Entity* entity, float t);
 
 /* Entity component that performs tilt animation depending on movement speed and time */
@@ -30,14 +33,15 @@ struct TiltComp {
 };
 
 void TiltComp_Init(struct TiltComp* anim);
-void TiltComp_Update(struct TiltComp* anim, double delta);
-void TiltComp_GetCurrent(struct TiltComp* anim, float t);
+void TiltComp_Update(struct LocalPlayer* p, struct TiltComp* anim, float delta);
+void TiltComp_GetCurrent(struct LocalPlayer* p, struct TiltComp* anim, float t);
 
 /* Entity component that performs management of hack states */
 struct HacksComp {
 	cc_bool IsOp;
 	cc_bool Floating; /* true if NoClip or Flying */
-	/* Speed player move at, relative to normal speed, when the 'speeding' key binding is held down */
+	cc_bool _noclipping;
+	/* Speed player move at, relative to normal speed, when the 'speeding' input binding is active */
 	float SpeedMultiplier;
 	/* Whether blocks that the player places that intersect themselves, should cause the player to
 	be pushed back in the opposite direction of the placed block */
@@ -81,7 +85,7 @@ float HacksComp_CalcSpeedFactor(struct HacksComp* hacks, cc_bool canSpeed);
 /* Base entity component that performs interpolation of position and orientation */
 struct InterpComp { InterpComp_Layout };
 
-void LocalInterpComp_SetLocation(struct InterpComp* interp, struct LocationUpdate* update);
+void LocalInterpComp_SetLocation(struct InterpComp* interp, struct LocationUpdate* update, struct Entity* e);
 void LocalInterpComp_AdvanceState(struct InterpComp* interp, struct Entity* e);
 
 /* Represents a network orientation state */
@@ -99,12 +103,6 @@ struct NetInterpComp {
 
 void NetInterpComp_SetLocation(struct NetInterpComp* interp, struct LocationUpdate* update, struct Entity* e);
 void NetInterpComp_AdvanceState(struct NetInterpComp* interp, struct Entity* e);
-
-/* Entity component that draws square and circle shadows beneath entities */
-
-extern cc_bool ShadowComponent_BoundShadowTex;
-extern GfxResourceID ShadowComponent_ShadowTex;
-void ShadowComponent_Draw(struct Entity* entity);
 
 /* Entity component that performs collision detection */
 struct CollisionsComp {
@@ -136,5 +134,7 @@ double PhysicsComp_CalcMaxHeight(float u);
 void PhysicsComp_DoEntityPush(struct Entity* entity);
 
 /* Entity component that plays block step sounds */
-void SoundComp_Tick(cc_bool wasOnGround);
+void SoundComp_Tick(struct LocalPlayer* p, cc_bool wasOnGround);
+
+CC_END_HEADER
 #endif

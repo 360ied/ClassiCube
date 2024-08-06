@@ -1,95 +1,56 @@
+/* Silence deprecation warnings on modern macOS/iOS */
+#define GL_SILENCE_DEPRECATION
+#define GLES_SILENCE_DEPRECATION
+
 #include "Core.h"
-#if defined CC_BUILD_GL && defined CC_BUILD_GLMODERN
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
 #include "_GraphicsBase.h"
 #include "Errors.h"
-#include "Logger.h"
 #include "Window.h"
+#include "Menus.h"
+
 /* OpenGL 2.0 backend (alternative modern-ish backend) */
+#include "../misc/opengl/GLCommon.h"
 
-#if defined CC_BUILD_WIN
-/* Avoid pointless includes */
-#define WIN32_LEAN_AND_MEAN
-#define NOSERVICE
-#define NOMCX
-#define NOIME
-#include <windows.h>
-#include <GL/gl.h>
-#elif defined CC_BUILD_IOS
-#include <OpenGLES/ES2/gl.h>
-#elif defined CC_BUILD_MACOS
-#include <OpenGL/gl.h>
-#elif defined CC_BUILD_GLES
-#include <GLES2/gl2.h>
-#else
-#define GL_GLEXT_PROTOTYPES
-#include <GL/gl.h>
-#endif
+/* e.g. GLAPI void APIENTRY glFunction(int args); */
+#define GL_FUNC(_retType, name) GLAPI _retType APIENTRY name
+#include "../misc/opengl/GL1Funcs.h"
 
-/* Windows gl.h only supplies up to OpenGL 1.1 headers */
+/* Functions must be dynamically linked on Windows */
 #ifdef CC_BUILD_WIN
-/* === BEGIN OPENGL HEADERS === */
-#define GL_ARRAY_BUFFER          0x8892
-#define GL_ELEMENT_ARRAY_BUFFER  0x8893
-#define GL_STATIC_DRAW           0x88E4
-#define GL_DYNAMIC_DRAW          0x88E8
+/* e.g. static void (APIENTRY *_glFunction)(int args); */
+#undef  GL_FUNC
+#define GL_FUNC(_retType, name) static _retType (APIENTRY *name)
+#include "../misc/opengl/GL2Funcs.h"
 
-#define GL_FRAGMENT_SHADER       0x8B30
-#define GL_VERTEX_SHADER         0x8B31
-#define GL_COMPILE_STATUS        0x8B81
-#define GL_LINK_STATUS           0x8B82
-#define GL_INFO_LOG_LENGTH       0x8B84
-
-static void (APIENTRY *glBindBuffer)(GLenum target, GLuint buffer);
-static void (APIENTRY *glDeleteBuffers)(GLsizei n, const GLuint* buffers);
-static void (APIENTRY *glGenBuffers)(GLsizei n, GLuint *buffers);
-static void (APIENTRY *glBufferData)(GLenum target, cc_uintptr size, const GLvoid* data, GLenum usage);
-static void (APIENTRY *glBufferSubData)(GLenum target, cc_uintptr offset, cc_uintptr size, const GLvoid* data);
-
-static GLuint (APIENTRY* glCreateShader)(GLenum type);
-static void   (APIENTRY* glDeleteShader)(GLuint shader);
-static void   (APIENTRY* glGetShaderiv)(GLuint shader, GLenum pname, GLint* params);
-static void   (APIENTRY* glGetShaderInfoLog)(GLuint shader, GLsizei bufSize, GLsizei* length, char* infoLog);
-static void   (APIENTRY* glShaderSource)(GLuint shader, GLsizei count, const char* const* string, const GLint* length);
-
-static void (APIENTRY* glAttachShader)(GLuint program, GLuint shader);
-static void (APIENTRY* glBindAttribLocation)(GLuint program, GLuint index, const char* name);
-static void (APIENTRY* glCompileShader)(GLuint shader);
-static void (APIENTRY* glDetachShader)(GLuint program, GLuint shader);
-static void (APIENTRY* glLinkProgram)(GLuint program);
-
-static GLuint (APIENTRY* glCreateProgram)(void);
-static void   (APIENTRY* glDeleteProgram)(GLuint program);
-static void   (APIENTRY* glGetProgramiv)(GLuint program, GLenum pname, GLint* params);
-static void   (APIENTRY* glGetProgramInfoLog)(GLuint program, GLsizei bufSize, GLsizei* length, char* infoLog);
-static void   (APIENTRY* glUseProgram)(GLuint program);
-
-static void (APIENTRY *glDisableVertexAttribArray)(GLuint index);
-static void (APIENTRY *glEnableVertexAttribArray)(GLuint index);
-static void (APIENTRY *glVertexAttribPointer)(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void* pointer);
-
-static GLint (APIENTRY *glGetUniformLocation)(GLuint program, const char* name);
-static void  (APIENTRY *glUniform1f)(GLint location, GLfloat v0);
-static void  (APIENTRY *glUniform2f)(GLint location, GLfloat v0, GLfloat v1);
-static void  (APIENTRY *glUniform3f)(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
-static void  (APIENTRY *glUniformMatrix4fv)(GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
-
-#define GLSym(sym) { DYNAMICLIB_QUOTE(sym), (void**)& ## sym }
+#define GLSym(sym) { DYNAMICLIB_QUOTE(sym), (void**)&sym }
 static const struct DynamicLibSym core_funcs[] = {
 	GLSym(glBindBuffer), GLSym(glDeleteBuffers), GLSym(glGenBuffers), GLSym(glBufferData), GLSym(glBufferSubData),
-	GLSym(glCreateShader), GLSym(glDeleteShader), GLSym(glGetShaderiv), GLSym(glGetShaderInfoLog), GLSym(glShaderSource),
-	GLSym(glAttachShader), GLSym(glBindAttribLocation), GLSym(glCompileShader), GLSym(glDetachShader), GLSym(glLinkProgram),
+
+	GLSym(glCreateShader),  GLSym(glDeleteShader),  GLSym(glGetShaderiv), GLSym(glGetShaderInfoLog), GLSym(glShaderSource),
+	GLSym(glAttachShader),  GLSym(glBindAttribLocation), GLSym(glCompileShader), GLSym(glDetachShader), GLSym(glLinkProgram),
+
 	GLSym(glCreateProgram), GLSym(glDeleteProgram), GLSym(glGetProgramiv), GLSym(glGetProgramInfoLog), GLSym(glUseProgram),
+
 	GLSym(glDisableVertexAttribArray), GLSym(glEnableVertexAttribArray), GLSym(glVertexAttribPointer),
+
 	GLSym(glGetUniformLocation), GLSym(glUniform1f), GLSym(glUniform2f), GLSym(glUniform3f), GLSym(glUniformMatrix4fv),
 };
-
-/* === END OPENGL HEADERS === */
+#else
+#include "../misc/opengl/GL2Funcs.h"
 #endif
 
+#define _glBindTexture    glBindTexture
+#define _glDeleteTextures glDeleteTextures
+#define _glGenTextures    glGenTextures
+#define _glTexImage2D     glTexImage2D
+#define _glTexSubImage2D  glTexSubImage2D
+
 #include "_GLShared.h"
-/* Current format and size of vertices */
-static int gfx_stride, gfx_format = -1;
 static GfxResourceID white_square;
+static int postProcess;
+enum PostProcess { POSTPROCESS_NONE, POSTPROCESS_GRAYSCALE };
+static const char* const postProcess_Names[2] = { "NONE", "GRAYSCALE" };
 
 
 /*########################################################################################################################*
@@ -102,17 +63,22 @@ static GLuint GL_GenAndBind(GLenum target) {
 	return id;
 }
 
-GfxResourceID Gfx_CreateIb(void* indices, int indicesCount) {
+GfxResourceID Gfx_CreateIb2(int count, Gfx_FillIBFunc fillFunc, void* obj) {
+	cc_uint16 indices[GFX_MAX_INDICES];
 	GLuint id      = GL_GenAndBind(GL_ELEMENT_ARRAY_BUFFER);
-	cc_uint32 size = indicesCount * 2;
+	cc_uint32 size = count * sizeof(cc_uint16);
+
+	fillFunc(indices, count, obj);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, size, indices, GL_STATIC_DRAW);
-	return id;
+	return uint_to_ptr(id);
 }
 
-void Gfx_BindIb(GfxResourceID ib) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)ib); }
+void Gfx_BindIb(GfxResourceID ib) { 
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ptr_to_uint(ib)); 
+}
 
 void Gfx_DeleteIb(GfxResourceID* ib) {
-	GLuint id = (GLuint)(*ib);
+	GLuint id = ptr_to_uint(*ib);
 	if (!id) return;
 	glDeleteBuffers(1, &id);
 	*ib = 0;
@@ -122,16 +88,18 @@ void Gfx_DeleteIb(GfxResourceID* ib) {
 /*########################################################################################################################*
 *------------------------------------------------------Vertex buffers-----------------------------------------------------*
 *#########################################################################################################################*/
-GfxResourceID Gfx_CreateVb(VertexFormat fmt, int count) {
-	return GL_GenAndBind(GL_ARRAY_BUFFER);
+static GfxResourceID Gfx_AllocStaticVb(VertexFormat fmt, int count) {
+	GLuint id = GL_GenAndBind(GL_ARRAY_BUFFER);
+	return uint_to_ptr(id);
 }
 
-void Gfx_BindVb(GfxResourceID vb) { glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vb); }
+void Gfx_BindVb(GfxResourceID vb) { 
+	glBindBuffer(GL_ARRAY_BUFFER, ptr_to_uint(vb)); 
+}
 
 void Gfx_DeleteVb(GfxResourceID* vb) {
-	GLuint id = (GLuint)(*vb);
-	if (!id) return;
-	glDeleteBuffers(1, &id);
+	GLuint id = ptr_to_uint(*vb);
+	if (id) glDeleteBuffers(1, &id);
 	*vb = 0;
 }
 
@@ -147,15 +115,22 @@ void Gfx_UnlockVb(GfxResourceID vb) {
 /*########################################################################################################################*
 *--------------------------------------------------Dynamic vertex buffers-------------------------------------------------*
 *#########################################################################################################################*/
-GfxResourceID Gfx_CreateDynamicVb(VertexFormat fmt, int maxVertices) {
-	GLuint id;
-	cc_uint32 size;
-	if (Gfx.LostContext) return 0;
+static GfxResourceID Gfx_AllocDynamicVb(VertexFormat fmt, int maxVertices) {
+	GLuint id      = GL_GenAndBind(GL_ARRAY_BUFFER);
+	cc_uint32 size = maxVertices * strideSizes[fmt];
 
-	id = GL_GenAndBind(GL_ARRAY_BUFFER);
-	size = maxVertices * strideSizes[fmt];
 	glBufferData(GL_ARRAY_BUFFER, size, NULL, GL_DYNAMIC_DRAW);
-	return id;
+	return uint_to_ptr(id);
+}
+
+void Gfx_BindDynamicVb(GfxResourceID vb) {
+	glBindBuffer(GL_ARRAY_BUFFER, ptr_to_uint(vb)); 
+}
+
+void Gfx_DeleteDynamicVb(GfxResourceID* vb) {
+	GLuint id = ptr_to_uint(*vb);
+	if (id) glDeleteBuffers(1, &id);
+	*vb = 0;
 }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
@@ -163,13 +138,13 @@ void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 }
 
 void Gfx_UnlockDynamicVb(GfxResourceID vb) {
-	glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vb);
+	glBindBuffer(GL_ARRAY_BUFFER, ptr_to_uint(vb));
 	glBufferSubData(GL_ARRAY_BUFFER, 0, tmpSize, tmpData);
 }
 
 void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
 	cc_uint32 size = vCount * gfx_stride;
-	glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vb);
+	glBindBuffer(GL_ARRAY_BUFFER, ptr_to_uint(vb));
 	glBufferSubData(GL_ARRAY_BUFFER, 0, size, vertices);
 }
 
@@ -194,7 +169,7 @@ void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
 
 /* cached uniforms (cached for multiple programs */
 static struct Matrix _view, _proj, _mvp;
-static cc_bool gfx_alphaTest, gfx_texTransform;
+static cc_bool gfx_texTransform;
 static float _texX, _texY;
 static PackedCol gfx_fogColor;
 static float gfx_fogEnd = -1.0f, gfx_fogDensity = -1.0f;
@@ -252,6 +227,15 @@ static void GenVertexShader(const struct GLShader* shader, cc_string* dst) {
 	String_AppendConst(dst,         "}");
 }
 
+static void AddPostProcessing(cc_string* dst) {
+	switch (postProcess) {
+	case POSTPROCESS_GRAYSCALE:
+		String_AppendConst(dst, "  float gray = 0.21 * col.r + 0.71 * col.g + 0.07 * col.b;\n");
+		String_AppendConst(dst, "  col = vec4(gray, gray, gray, col.a);\n");
+		break;
+	}
+}
+
 /* Generates source code for a GLSL fragment shader, based on shader's flags */
 static void GenFragmentShader(const struct GLShader* shader, cc_string* dst) {
 	int uv = shader->features & FTR_TEXTURE_UV;
@@ -281,6 +265,8 @@ static void GenFragmentShader(const struct GLShader* shader, cc_string* dst) {
 	if (fl) String_AppendConst(dst, "  float f = clamp((fogEnd - depth) / fogEnd, 0.0, 1.0);\n");
 	if (fd) String_AppendConst(dst, "  float f = clamp(exp(fogDensity * depth), 0.0, 1.0);\n");
 	if (fm) String_AppendConst(dst, "  col.rgb = mix(fogCol, col.rgb, f);\n");
+	
+	if (fl || fd || fm) AddPostProcessing(dst);
 	String_AppendConst(dst,         "  gl_FragColor = col;\n");
 	String_AppendConst(dst,         "}");
 }
@@ -457,7 +443,7 @@ void Gfx_BindTexture(GfxResourceID texId) {
 	/*   WebGL/OpenGL ES - pure black 1x1 texture */
 	/* So for consistency, always use a 1x1 pure white texture */
 	if (!texId) texId = white_square;
-	glBindTexture(GL_TEXTURE_2D, (GLuint)texId);
+	glBindTexture(GL_TEXTURE_2D, ptr_to_uint(texId));
 }
 
 
@@ -492,12 +478,12 @@ void Gfx_SetFogMode(FogFunc func) {
 	SwitchProgram();
 }
 
-void Gfx_SetTexturing(cc_bool enabled) { }
-void Gfx_SetAlphaTest(cc_bool enabled) { gfx_alphaTest = enabled; SwitchProgram(); }
+static void SetAlphaTest(cc_bool enabled) { SwitchProgram(); }
 
 void Gfx_DepthOnlyRendering(cc_bool depthOnly) {
 	cc_bool enabled = !depthOnly;
-	Gfx_SetColWriteMask(enabled, enabled, enabled, enabled);
+	SetColorWrite(enabled & gfx_colorMask[0], enabled & gfx_colorMask[1], 
+				  enabled & gfx_colorMask[2], enabled & gfx_colorMask[3]);
 }
 
 
@@ -505,15 +491,18 @@ void Gfx_DepthOnlyRendering(cc_bool depthOnly) {
 *---------------------------------------------------------Matrices--------------------------------------------------------*
 *#########################################################################################################################*/
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
-	if (type == MATRIX_VIEW)       _view = *matrix;
-	if (type == MATRIX_PROJECTION) _proj = *matrix;
+	if (type == MATRIX_VIEW) _view = *matrix;
+	if (type == MATRIX_PROJ) _proj = *matrix;
 
 	Matrix_Mul(&_mvp, &_view, &_proj);
 	DirtyUniform(UNI_MVP_MATRIX);
 	ReloadUniforms();
 }
-void Gfx_LoadIdentityMatrix(MatrixType type) {
-	Gfx_LoadMatrix(type, &Matrix_Identity);
+
+void Gfx_LoadMVP(const struct Matrix* view, const struct Matrix* proj, struct Matrix* mvp) {
+	Gfx_LoadMatrix(MATRIX_VIEW, view);
+	Gfx_LoadMatrix(MATRIX_PROJ, proj);
+	Matrix_Mul(mvp, view, proj);
 }
 
 void Gfx_EnableTextureOffset(float x, float y) {
@@ -532,13 +521,32 @@ void Gfx_DisableTextureOffset(void) {
 /*########################################################################################################################*
 *-------------------------------------------------------State setup-------------------------------------------------------*
 *#########################################################################################################################*/
+static void GLContext_GetAll(const struct DynamicLibSym* syms, int count) {
+	int i;
+	for (i = 0; i < count; i++) 
+	{
+		*syms[i].symAddr = GLContext_GetAddress(syms[i].name);
+	}
+}
+
 static void GLBackend_Init(void) {
 #ifdef CC_BUILD_WIN
 	GLContext_GetAll(core_funcs, Array_Elems(core_funcs));
 #endif
+	Gfx.BackendType = CC_GFX_BACKEND_GL2;
 
 #ifdef CC_BUILD_GLES
-	// OpenGL ES 2.0 doesn't support custom mipmaps levels
+	// OpenGL ES 2.0 doesn't support custom mipmaps levels, but 3.2 does
+	// Note that GL_MAJOR_VERSION and GL_MINOR_VERSION were not actually
+	//  implemented until 3.0.. but hopefully older GPU drivers out there
+	//  don't try and set a value even when it's unsupported
+	#define _GL_MAJOR_VERSION 33307
+	#define _GL_MINOR_VERSION 33308
+	
+	GLint major = 0, minor = 0;
+	glGetIntegerv(_GL_MAJOR_VERSION, &major);
+	glGetIntegerv(_GL_MINOR_VERSION, &minor);
+	customMipmapsLevels = major >= 3 && minor >= 2;
 #else
     customMipmapsLevels = true;
     const GLubyte* ver  = glGetString(GL_VERSION);
@@ -558,15 +566,19 @@ static void GLBackend_Init(void) {
 #endif
 }
 
-static void Gfx_FreeState(void) {
+static void DeleteShaders(void) {
 	int i;
-	FreeDefaultResources();
 	gfx_activeShader = NULL;
 
 	for (i = 0; i < Array_Elems(shaders); i++) {
 		glDeleteProgram(shaders[i].program);
 		shaders[i].program = 0;
 	}
+}
+
+static void Gfx_FreeState(void) {
+	FreeDefaultResources();
+	DeleteShaders();
 	Gfx_DeleteTexture(&white_square);
 }
 
@@ -589,6 +601,21 @@ static void Gfx_RestoreState(void) {
 }
 cc_bool Gfx_WarnIfNecessary(void) { return false; }
 
+static int  GetPostProcess(void) { return postProcess; }
+static void SetPostProcess(int v) {
+	postProcess = v;
+	DeleteShaders();
+	SwitchProgram();
+	DirtyUniform(UNI_MASK_ALL);
+}
+
+cc_bool Gfx_GetUIOptions(struct MenuOptionsScreen* s) {
+	MenuOptionsScreen_AddEnum(s, "Post process", 
+		postProcess_Names, Array_Elems(postProcess_Names),
+		GetPostProcess, SetPostProcess, NULL);
+	return false;
+}
+
 
 /*########################################################################################################################*
 *----------------------------------------------------------Drawing--------------------------------------------------------*
@@ -599,27 +626,27 @@ static GL_SetupVBFunc gfx_setupVBFunc;
 static GL_SetupVBRangeFunc gfx_setupVBRangeFunc;
 
 static void GL_SetupVbColoured(void) {
-	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_COLOURED, (void*)0);
-	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_COLOURED, (void*)12);
+	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_COLOURED, uint_to_ptr( 0));
+	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_COLOURED, uint_to_ptr(12));
 }
 
 static void GL_SetupVbTextured(void) {
-	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, (void*)0);
-	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_TEXTURED, (void*)12);
-	glVertexAttribPointer(2, 2, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, (void*)16);
+	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, uint_to_ptr( 0));
+	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_TEXTURED, uint_to_ptr(12));
+	glVertexAttribPointer(2, 2, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, uint_to_ptr(16));
 }
 
 static void GL_SetupVbColoured_Range(int startVertex) {
 	cc_uint32 offset = startVertex * SIZEOF_VERTEX_COLOURED;
-	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_COLOURED, (void*)(offset));
-	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_COLOURED, (void*)(offset + 12));
+	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_COLOURED, uint_to_ptr(offset     ));
+	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_COLOURED, uint_to_ptr(offset + 12));
 }
 
 static void GL_SetupVbTextured_Range(int startVertex) {
 	cc_uint32 offset = startVertex * SIZEOF_VERTEX_TEXTURED;
-	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, (void*)(offset));
-	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_TEXTURED, (void*)(offset + 12));
-	glVertexAttribPointer(2, 2, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, (void*)(offset + 16));
+	glVertexAttribPointer(0, 3, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, uint_to_ptr(offset     ));
+	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, true,  SIZEOF_VERTEX_TEXTURED, uint_to_ptr(offset + 12));
+	glVertexAttribPointer(2, 2, GL_FLOAT,         false, SIZEOF_VERTEX_TEXTURED, uint_to_ptr(offset + 16));
 }
 
 void Gfx_SetVertexFormat(VertexFormat fmt) {
@@ -666,7 +693,7 @@ void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex) {
 		GL_SetupVbTextured();
 	} else {
 		/* ICOUNT(startVertex) * 2 = startVertex * 3  */
-		glDrawElements(GL_TRIANGLES, ICOUNT(verticesCount), GL_UNSIGNED_SHORT, (void*)(startVertex * 3));
+		glDrawElements(GL_TRIANGLES, ICOUNT(verticesCount), GL_UNSIGNED_SHORT, uint_to_ptr(startVertex * 3));
 	}
 }
 #endif

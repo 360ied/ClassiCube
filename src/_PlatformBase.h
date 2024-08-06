@@ -2,6 +2,7 @@
 #include "String.h"
 #include "Logger.h"
 #include "Constants.h"
+#include "Errors.h"
 
 /*########################################################################################################################*
 *---------------------------------------------------------Memory----------------------------------------------------------*
@@ -44,15 +45,17 @@ void* Mem_Realloc(void* mem, cc_uint32 numElems, cc_uint32 elemsSize, const char
 }
 
 static CC_NOINLINE cc_uint32 CalcMemSize(cc_uint32 numElems, cc_uint32 elemsSize) {
-	if (!numElems) return 1; /* treat 0 size as 1 byte */
-	cc_uint32 numBytes = numElems * elemsSize; /* TODO: avoid overflow here */
-	if (numBytes < numElems) return 0; /* TODO: Use proper overflow checking */
+	cc_uint32 numBytes;
+	if (!numElems || !elemsSize) return 1; /* treat 0 size as 1 byte */
+	
+	numBytes = numElems * elemsSize;
+	if (numBytes / elemsSize != numElems) return 0; /* Overflow */
 	return numBytes;
 }
 
 
 /*########################################################################################################################*
-*------------------------------------------------------Logging/Time-------------------------------------------------------*
+*--------------------------------------------------------Logging----------------------------------------------------------*
 *#########################################################################################################################*/
 void Platform_Log1(const char* format, const void* a1) {
 	Platform_Log4(format, a1, NULL, NULL, NULL);
@@ -76,10 +79,67 @@ void Platform_LogConst(const char* message) {
 	Platform_Log(message, String_Length(message));
 }
 
+/*########################################################################################################################*
+*-----------------------------------------------------Process/Module------------------------------------------------------*
+*#########################################################################################################################*/
+static char gameArgs[GAME_MAX_CMDARGS][STRING_SIZE];
+static int gameNumArgs;
+static cc_bool gameHasArgs;
+
+static cc_result SetGameArgs(const cc_string* args, int numArgs) {
+	int i;
+	for (i = 0; i < numArgs; i++) 
+	{
+		String_CopyToRawArray(gameArgs[i], &args[i]);
+	}
+	
+	gameHasArgs = true;
+	gameNumArgs = numArgs;
+	return 0;
+}
+
+static int GetGameArgs(cc_string* args) {
+	int i, count = gameNumArgs;
+	for (i = 0; i < count; i++) 
+	{
+		args[i] = String_FromRawArray(gameArgs[i]);
+	}
+	
+	/* clear arguments so after game is closed, launcher is started */
+	gameNumArgs = 0;
+	return count;
+}
+
+
+/*########################################################################################################################*
+*----------------------------------------------------------Misc-----------------------------------------------------------*
+*#########################################################################################################################*/
 int Stopwatch_ElapsedMS(cc_uint64 beg, cc_uint64 end) {
 	cc_uint64 raw = Stopwatch_ElapsedMicroseconds(beg, end);
 	if (raw > Int32_MaxValue) return Int32_MaxValue / 1000;
 	return (int)raw / 1000;
+}
+
+static CC_INLINE void SocketAddr_Set(cc_sockaddr* addr, const void* src, unsigned srcLen) {
+	if (srcLen > CC_SOCKETADDR_MAXSIZE) Logger_Abort("Attempted to copy too large socket");
+
+	Mem_Copy(addr->data, src, srcLen);
+	addr->size = srcLen;
+}
+
+cc_result Socket_WriteAll(cc_socket socket, const cc_uint8* data, cc_uint32 count) {
+	cc_uint32 sent;
+	cc_result res;
+
+	while (count)
+	{
+		if ((res = Socket_Write(socket, data, count, &sent))) return res;
+		if (!sent) return ERR_END_OF_STREAM;
+
+		data  += sent;
+		count -= sent;
+	}
+	return 0;
 }
 
 

@@ -6,8 +6,10 @@
 #include "BlockID.h"
 /* Stores properties and data for blocks.
    Also performs automatic rotation of directional blocks.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
+CC_BEGIN_HEADER
+
 struct IGameComponent;
 extern struct IGameComponent Blocks_Component;
 
@@ -46,7 +48,7 @@ CC_VAR extern struct _BlockLists {
 	/* Whether this block prevents lights from passing through it. */
 	cc_bool BlocksLight[BLOCK_COUNT];
 	/* Whether this block is fully bright/light emitting. (Like lava) */
-	cc_bool FullBright[BLOCK_COUNT];
+	cc_uint8 Brightness[BLOCK_COUNT];
 	/* Fog colour when player is inside this block. */
 	/* NOTE: Only applies if fog density is not 0. */
 	PackedCol FogCol[BLOCK_COUNT];
@@ -61,8 +63,8 @@ CC_VAR extern struct _BlockLists {
 	/* Can be < 1 to slow player down, or > 1 to speed up. */
 	float SpeedMultiplier[BLOCK_COUNT];
 	/* Bit flags of which faces of this block uses light colour from neighbouring blocks. */
-	/*   e.g. a block with Min.X of 0.0 uses light colour at X-1,Y,Z for XMIN face. */
-	/*   e.g. a block with Min.X of 0.1 uses light colour at X,Y,Z   for XMIN face. */
+	/*   e.g. a block with Min.x of 0.0 uses light colour at X-1,Y,Z for XMIN face. */
+	/*   e.g. a block with Min.x of 0.1 uses light colour at X,Y,Z   for XMIN face. */
 	cc_uint8 LightOffset[BLOCK_COUNT];
 	/* Draw method used when rendering this block. See DrawType enum. */
 	cc_uint8 Draw[BLOCK_COUNT];
@@ -112,6 +114,8 @@ if (Blocks.Tinted[block]) col = PackedCol_Tint(col, Blocks.FogCol[block]);
 /* The difference can be seen by placing a lower and upper slab block on a wall, */
 /*  and comparing whether the block directly behind them is in shadow or not */
 #define LIGHT_FLAG_SHADES_FROM_BELOW 6
+cc_uint8 Block_ReadBrightness(cc_uint8 fullBright);
+cc_uint8 Block_WriteFullBright(cc_uint8 brightness);
 
 /* Returns whether the given block has been changed from default */
 cc_bool Block_IsCustomDefined(BlockID block);
@@ -124,7 +128,8 @@ void Block_ResetProps(BlockID block);
 
 /* Gets the name of the given block */
 /* NOTE: Name points directly within underlying buffer, you MUST NOT persist this string */
-CC_API STRING_REF cc_string Block_UNSAFE_GetName(BlockID block);
+CC_API STRING_REF  cc_string Block_UNSAFE_GetName(      BlockID block);
+typedef STRING_REF cc_string (*FP_Block_UNSAFE_GetName)(BlockID block);
 /* Sets the name of the given block. */
 void Block_SetName(BlockID block, const cc_string* name);
 /* Finds the ID of the block whose name caselessly matches given name */
@@ -148,4 +153,6 @@ extern cc_bool AutoRotate_Enabled;
 BlockID AutoRotate_RotateBlock(BlockID block);
 /* Returns non 0 if both blocks belong to the same autorotate group */
 cc_bool AutoRotate_BlocksShareGroup(BlockID block, BlockID blockOther);
+
+CC_END_HEADER
 #endif

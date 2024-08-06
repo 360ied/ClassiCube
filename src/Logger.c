@@ -6,37 +6,42 @@
 #include "Stream.h"
 #include "Errors.h"
 #include "Utils.h"
-#include "Http.h"
 
 #if defined CC_BUILD_WEB
-/* Can't see native CPU state with javascript */
+	/* Can't see native CPU state with javascript */
 #elif defined CC_BUILD_WIN
-#define WIN32_LEAN_AND_MEAN
-#define NOSERVICE
-#define NOMCX
-#define NOIME
-#include <windows.h>
-#include <imagehlp.h>
+	#define WIN32_LEAN_AND_MEAN
+	#define NOSERVICE
+	#define NOMCX
+	#define NOIME
+	#define CUR_PROCESS_HANDLE ((HANDLE)-1) /* GetCurrentProcess() always returns -1 */
+	
+	#include <windows.h>
+	#include <imagehlp.h>
+	static HANDLE curProcess = CUR_PROCESS_HANDLE;
 #elif defined CC_BUILD_OPENBSD || defined CC_BUILD_HAIKU || defined CC_BUILD_SERENITY
-#include <signal.h>
-/* These operating systems don't provide sys/ucontext.h */
-/*  But register constants be found from includes in <signal.h> */
+	#include <signal.h>
+	/* These operating systems don't provide sys/ucontext.h */
+	/*  But register constants be found from includes in <signal.h> */
+	#elif defined CC_BUILD_OS2
+	#include <signal.h>
+	#include <386/ucontext.h>
 #elif defined CC_BUILD_LINUX || defined CC_BUILD_ANDROID
-/* Need to define this to get REG_ constants */
-#define _GNU_SOURCE
-#include <sys/ucontext.h>
-#include <signal.h>
+	/* Need to define this to get REG_ constants */
+	#define _GNU_SOURCE
+	#include <sys/ucontext.h>
+	#include <signal.h>
 #elif defined CC_BUILD_POSIX
-#include <signal.h>
-#include <sys/ucontext.h>
+	#include <signal.h>
+	#include <sys/ucontext.h>
 #endif
+
 #ifdef CC_BUILD_DARWIN
 /* Need this to detect macOS < 10.4, and switch to NS* api instead if so */
 #include <AvailabilityMacros.h>
 #endif
-
-/* Only show up to 40 frames in backtrace */
-#define MAX_BACKTRACE_FRAMES 40
+/* Only show up to 50 frames in backtrace */
+#define MAX_BACKTRACE_FRAMES 50
 
 static void AbortCommon(cc_result result, const char* raw_msg, void* ctx);
 
@@ -81,6 +86,7 @@ static const char* GetCCErrorDesc(cc_result res) {
 	case PNG_ERR_REACHED_IEND:     return "Incomplete PNG image data";
 	case PNG_ERR_NO_DATA:          return "No image in PNG";
 	case PNG_ERR_INVALID_SCANLINE: return "Invalid PNG scanline type";
+	case PNG_ERR_16BITSAMPLES:     return "16 bpp PNGs unsupported";
 
 	case NBT_ERR_UNKNOWN:   return "Unknown NBT tag type";
 	case CW_ERR_ROOT_TAG:   return "Invalid root NBT tag";
@@ -98,6 +104,10 @@ static const char* GetCCErrorDesc(cc_result res) {
 	case NBT_ERR_EXPECTED_STR: return "Expected String NBT tag";
 	case NBT_ERR_EXPECTED_ARR: return "Expected ByteArray NBT tag";
 	case NBT_ERR_ARR_TOO_SMALL:return "ByteArray NBT tag too small";
+
+	case HTTP_ERR_NO_SSL: return "HTTPS URLs are not currently supported";
+	case SOCK_ERR_UNKNOWN_HOST: return "Host could not be resolved to an IP address";
+	case ERR_NO_NETWORKING: return "No working network access";
 	}
 	return NULL;
 }
@@ -117,14 +127,12 @@ static void AppendErrorDesc(cc_string* msg, cc_result res, Logger_DescribeError 
 }
 
 void Logger_FormatWarn(cc_string* msg, cc_result res, const char* action, Logger_DescribeError describeErr) {
-	String_Format2(msg, res < 20000 ? "Error %i when %c" : "Error %h when %c",
-					&res, action);
+	String_Format2(msg, "Error %e when %c", &res, action);
 	AppendErrorDesc(msg, res, describeErr);
 }
 
 void Logger_FormatWarn2(cc_string* msg, cc_result res, const char* action, const cc_string* path, Logger_DescribeError describeErr) {
-	String_Format3(msg, res < 20000 ? "Error %i when %c '%s'" : "Error %h when %c '%s'",
-					&res, action, path);
+	String_Format3(msg, "Error %e when %c '%s'", &res, action, path);
 	AppendErrorDesc(msg, res, describeErr);
 }
 
@@ -195,29 +203,38 @@ static void PrintFrame(cc_string* str, cc_uintptr addr, cc_uintptr symAddr, cons
 
 #if defined CC_BUILD_WIN
 struct SymbolAndName { IMAGEHLP_SYMBOL symbol; char name[256]; };
+static BOOL (WINAPI *_SymGetSymFromAddr)(HANDLE process, DWORD_PTR addr, DWORD_PTR* displacement, IMAGEHLP_SYMBOL* sym);
+static BOOL (WINAPI *_SymGetModuleInfo) (HANDLE process, DWORD_PTR addr, IMAGEHLP_MODULE* module);
+
 static void DumpFrame(HANDLE process, cc_string* trace, cc_uintptr addr) {
 	char strBuffer[512]; cc_string str;
-	String_InitArray(str, strBuffer);
-
 	struct SymbolAndName s = { 0 };
-	s.symbol.MaxNameLength = 255;
-	s.symbol.SizeOfStruct  = sizeof(IMAGEHLP_SYMBOL);
-	SymGetSymFromAddr(process, addr, NULL, &s.symbol);
-
 	IMAGEHLP_MODULE m = { 0 };
-	m.SizeOfStruct    = sizeof(IMAGEHLP_MODULE);
-	SymGetModuleInfo(process, addr, &m);
 
+	if (_SymGetSymFromAddr) {
+		s.symbol.MaxNameLength = 255;
+		s.symbol.SizeOfStruct  = sizeof(IMAGEHLP_SYMBOL);
+		_SymGetSymFromAddr(process, addr, NULL, &s.symbol);
+	}
+	
+	if (_SymGetModuleInfo) {
+		m.SizeOfStruct    = sizeof(IMAGEHLP_MODULE);
+		_SymGetModuleInfo(process, addr, &m);
+	}
+
+	String_InitArray(str, strBuffer);
 	PrintFrame(&str, addr, s.symbol.Address, s.symbol.Name, m.ModuleName);
 	String_AppendString(trace, &str);
 
-	/* This function only works for .pdb debug info */
-	/* This function is also missing on Windows98 + KernelEX */
+	/* This function only works for .pdb debug info anyways */
+	/* This function is also missing on Windows 9X */
 #if _MSC_VER
-	IMAGEHLP_LINE line = { 0 }; DWORD lineOffset;
-	line.SizeOfStruct = sizeof(IMAGEHLP_LINE);
-	if (SymGetLineFromAddr(process, addr, &lineOffset, &line)) {
-		String_Format2(&str, "  line %i in %c\r\n", &line.LineNumber, line.FileName);
+	{
+		IMAGEHLP_LINE line = { 0 }; DWORD lineOffset;
+		line.SizeOfStruct = sizeof(IMAGEHLP_LINE);
+		if (SymGetLineFromAddr(process, addr, &lineOffset, &line)) {
+			String_Format2(&str, "  line %i in %c\r\n", &line.LineNumber, line.FileName);
+		}
 	}
 #endif
 	Logger_Log(&str);
@@ -239,7 +256,7 @@ static void DumpFrame(cc_string* trace, void* addr) {
 	cc_uintptr addr_ = (cc_uintptr)addr;
 	String_Format1(trace, "%x", &addr_);
 }
-#elif defined CC_BUILD_POSIX
+#elif defined CC_BUILD_POSIX && !defined CC_BUILD_OS2
 /* need to define __USE_GNU for dladdr */
 #ifndef __USE_GNU
 #define __USE_GNU
@@ -269,11 +286,39 @@ static void DumpFrame(cc_string* trace, void* addr) {
 *-------------------------------------------------------Backtracing-------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
+static DWORD_PTR (WINAPI *_SymGetModuleBase)(HANDLE process, DWORD_PTR addr);
+static PVOID     (WINAPI *_SymFunctionTableAccess)(HANDLE process, DWORD_PTR addr);
+static BOOL      (WINAPI *_SymInitialize)(HANDLE process, PCSTR userSearchPath, BOOL fInvadeProcess);
+
+static PVOID WINAPI FunctionTableAccessCallback(HANDLE process, DWORD_PTR addr) {
+	if (!_SymFunctionTableAccess) return NULL;
+	return _SymFunctionTableAccess(process, addr);
+}
+
+static DWORD_PTR WINAPI GetModuleBaseCallback(HANDLE process, DWORD_PTR addr) {
+	if (!_SymGetModuleBase) return 0;
+	return _SymGetModuleBase(process, addr);
+}
+
+/* This callback function is used so stack Walking works using StackWalk properly on Windows 9x: */
+/*  - on Windows 9x process ID is passed instead of process handle as the "process" argument */
+/*  - the SymXYZ functions expect a process ID on Windows 9x, so that works fine */
+/*  - if NULL is passed as the "ReadMemory" argument, the default callback using ReadProcessMemory is used */
+/*  - however, ReadProcessMemory expects a process handle, and so that will fail since it's given a process ID */
+/* So to work around this, instead manually call ReadProcessMemory with the current process handle */
+static BOOL __stdcall ReadMemCallback(HANDLE process, DWORD_PTR baseAddress, PVOID buffer, DWORD size, PDWORD numBytesRead) {
+	SIZE_T numRead = 0;
+	BOOL ok = ReadProcessMemory(CUR_PROCESS_HANDLE, (LPCVOID)baseAddress, buffer, size, &numRead);
+	
+	*numBytesRead = (DWORD)numRead; /* DWORD always 32 bits */
+	return ok;
+}
+static cc_uintptr spRegister;
+
 static int GetFrames(CONTEXT* ctx, cc_uintptr* addrs, int max) {
 	STACKFRAME frame = { 0 };
-	HANDLE process, thread;
 	int count, type;
-	CONTEXT copy;
+	HANDLE thread;
 
 	frame.AddrPC.Mode    = AddrModeFlat;
 	frame.AddrFrame.Mode = AddrModeFlat;
@@ -284,21 +329,23 @@ static int GetFrames(CONTEXT* ctx, cc_uintptr* addrs, int max) {
 	frame.AddrPC.Offset    = ctx->Eip;
 	frame.AddrFrame.Offset = ctx->Ebp;
 	frame.AddrStack.Offset = ctx->Esp;
+	spRegister             = ctx->Esp;
 #elif defined _M_X64
 	type = IMAGE_FILE_MACHINE_AMD64;
 	frame.AddrPC.Offset    = ctx->Rip;
 	frame.AddrFrame.Offset = ctx->Rsp;
 	frame.AddrStack.Offset = ctx->Rsp;
+	spRegister             = ctx->Rsp;
 #else
 	/* Always available after XP, so use that */
 	return RtlCaptureStackBackTrace(0, max, (void**)addrs, NULL);
 #endif
-	process = GetCurrentProcess();
-	thread  = GetCurrentThread();
-	copy    = *ctx;
+	thread = GetCurrentThread();
 
-	for (count = 0; count < max; count++) {
-		if (!StackWalk(type, process, thread, &frame, &copy, NULL, SymFunctionTableAccess, SymGetModuleBase, NULL)) break;
+	for (count = 0; count < max; count++) 
+	{
+		if (!StackWalk(type, curProcess, thread, &frame, ctx, ReadMemCallback, 
+						FunctionTableAccessCallback, GetModuleBaseCallback, NULL)) break;
 		if (!frame.AddrFrame.Offset) break;
 		addrs[count] = frame.AddrPC.Offset;
 	}
@@ -308,33 +355,19 @@ static int GetFrames(CONTEXT* ctx, cc_uintptr* addrs, int max) {
 void Logger_Backtrace(cc_string* trace, void* ctx) {
 	cc_uintptr addrs[MAX_BACKTRACE_FRAMES];
 	int i, frames;
-	HANDLE process;
 
-	process = GetCurrentProcess();
-	SymInitialize(process, NULL, TRUE);
+	if (_SymInitialize) {
+		_SymInitialize(curProcess, NULL, TRUE); /* TODO only in MSVC.. */
+	}
 	frames  = GetFrames((CONTEXT*)ctx, addrs, MAX_BACKTRACE_FRAMES);
 
 	for (i = 0; i < frames; i++) {
-		DumpFrame(process, trace, addrs[i]);
+		DumpFrame(curProcess, trace, addrs[i]);
 	}
 	String_AppendConst(trace, _NL);
 }
 #elif defined CC_BUILD_ANDROID
-/* android's bionic libc doesn't provide backtrace (execinfo.h) */
-#include <unwind.h>
-
-static _Unwind_Reason_Code UnwindFrame(struct _Unwind_Context* ctx, void* arg) {
-	cc_uintptr addr = _Unwind_GetIP(ctx);
-	if (!addr) return _URC_END_OF_STACK;
-
-	DumpFrame((cc_string*)arg, (void*)addr);
-	return _URC_NO_REASON;
-}
-
-void Logger_Backtrace(cc_string* trace, void* ctx) {
-	_Unwind_Backtrace(UnwindFrame, trace);
-	String_AppendConst(trace, _NL);
-}
+	#define CC_BACKTRACE_UNWIND
 #elif defined CC_BUILD_DARWIN
 /* backtrace is only available on macOS since 10.5 */
 void Logger_Backtrace(cc_string* trace, void* ctx) {
@@ -348,7 +381,8 @@ void Logger_Backtrace(cc_string* trace, void* ctx) {
 	/* Skip frames don't want to include in backtrace */
 	/*  frame 0 = thread_stack_pcs */
 	/*  frame 1 = Logger_Backtrace */
-	for (i = 2; i < frames; i++) {
+	for (i = 2; i < frames; i++) 
+	{
 		DumpFrame(trace, addrs[i]);
 	}
 	String_AppendConst(trace, _NL);
@@ -363,17 +397,24 @@ void Logger_Backtrace(cc_string* trace, void* ctx) {
 	String_AppendConst(trace, "-- backtrace unimplemented --");
 	/* TODO implement backtrace using exc_unwind https://nixdoc.net/man-pages/IRIX/man3/exception.3.html */
 }
-#elif defined CC_BUILD_POSIX
+#elif defined CC_BACKTRACE_BUILTIN
+/* Implemented later at end of the file */
+#elif defined CC_BUILD_POSIX && defined _GLIBC_
 #include <execinfo.h>
+
 void Logger_Backtrace(cc_string* trace, void* ctx) {
 	void* addrs[MAX_BACKTRACE_FRAMES];
 	int i, frames = backtrace(addrs, MAX_BACKTRACE_FRAMES);
 
-	for (i = 0; i < frames; i++) {
+	for (i = 0; i < frames; i++) 
+	{
 		DumpFrame(trace, addrs[i]);
 	}
 	String_AppendConst(trace, _NL);
 }
+#elif defined CC_BUILD_POSIX
+/* musl etc - rely on unwind from GCC instead */
+	#define CC_BACKTRACE_UNWIND
 #else
 void Logger_Backtrace(cc_string* trace, void* ctx) { }
 #endif
@@ -465,6 +506,14 @@ String_Format4(str, "r24=%x r25=%x r26=%x r27=%x" _NL, REG_GNUM(24), REG_GNUM(25
 String_Format4(str, "r28=%x sp =%x fp =%x ra =%x" _NL, REG_GNUM(28), REG_GNUM(29), REG_GNUM(30), REG_GNUM(31)); \
 String_Format3(str, "pc =%x lo =%x hi =%x" _NL,        REG_GET_PC(), REG_GET_LO(), REG_GET_HI());
 
+#define Dump_SH() \
+String_Format4(str, "r0 =%x r1 =%x r2 =%x r3 =%x" _NL, REG_GNUM(0),  REG_GNUM(1),  REG_GNUM(2),  REG_GNUM(3)); \
+String_Format4(str, "r4 =%x r5 =%x r6 =%x r7 =%x" _NL, REG_GNUM(4),  REG_GNUM(5),  REG_GNUM(6),  REG_GNUM(7)); \
+String_Format4(str, "r8 =%x r9 =%x r10=%x r11=%x" _NL, REG_GNUM(8),  REG_GNUM(9),  REG_GNUM(10), REG_GNUM(11)); \
+String_Format4(str, "r12=%x r13=%x r14=%x r15=%x" _NL, REG_GNUM(12), REG_GNUM(13), REG_GNUM(14), REG_GNUM(15)); \
+String_Format3(str, "mal=%x mah=%x gbr=%x"        _NL, REG_GET_MACL(), REG_GET_MACH(), REG_GET_GBR()); \
+String_Format2(str, "pc =%x ra =%x"               _NL, REG_GET_PC(), REG_GET_RA());
+
 #if defined CC_BUILD_WIN
 /* See CONTEXT in WinNT.h */
 static void PrintRegisters(cc_string* str, void* ctx) {
@@ -490,6 +539,32 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 	#define REG_GET_SP()      &r->Sp
 	#define REG_GET_PC()      &r->Pc
 	Dump_ARM64()
+#elif defined _M_PPC
+	#define REG_GNUM(num) &r->Gpr ## num
+	#define REG_GET_PC()  &r->Iar
+	#define REG_GET_LR()  &r->Lr
+	#define REG_GET_CTR() &r->Ctr
+	Dump_PPC()
+#elif defined _M_ALPHA
+	#define REG_GNUM(num) &r->IntV0 + num
+	#define REG_GET_FP()  &r->IntFp
+	#define REG_GET_SP()  &r->IntSp
+	#define REG_GET_PC()  &r->Fir
+	Dump_Alpha()
+#elif defined _MIPS_
+	#define REG_GNUM(num) &r->IntZero + num
+	#define REG_GET_PC()  &r->Fir
+	#define REG_GET_LO()  &r->IntLo
+	#define REG_GET_HI()  &r->IntHi
+	Dump_MIPS()
+#elif defined SHx
+	#define REG_GNUM(num)  &r->R ## num
+	#define REG_GET_MACL() &r->MACL
+	#define REG_GET_MACH() &r->MACH
+	#define REG_GET_GBR()  &r->GBR
+	#define REG_GET_PC()   &r->Fir
+	#define REG_GET_RA()   &r->PR
+	Dump_SH()
 #else
 	#error "Unknown CPU architecture"
 #endif
@@ -554,64 +629,64 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 static void PrintRegisters(cc_string* str, void* ctx) {
 #if __PPC__ && __WORDSIZE == 32
 	/* See sysdeps/unix/sysv/linux/powerpc/sys/ucontext.h in glibc */
-	mcontext_t r = *((ucontext_t*)ctx)->uc_mcontext.uc_regs;
+	mcontext_t* r = ((ucontext_t*)ctx)->uc_mcontext.uc_regs;
 #else
-	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
+	mcontext_t* r = &((ucontext_t*)ctx)->uc_mcontext;
 #endif
 
 #if defined __i386__
-	#define REG_GET(ign, reg) &r.gregs[REG_E##reg]
+	#define REG_GET(ign, reg) &r->gregs[REG_E##reg]
 	Dump_X86()
 #elif defined __x86_64__
-	#define REG_GET(ign, reg) &r.gregs[REG_R##reg]
+	#define REG_GET(ign, reg) &r->gregs[REG_R##reg]
 	Dump_X64()
 #elif defined __aarch64__
-	#define REG_GNUM(num)     &r.regs[num]
-	#define REG_GET_FP()      &r.regs[29]
-	#define REG_GET_LR()      &r.regs[30]
-	#define REG_GET_SP()      &r.sp
-	#define REG_GET_PC()      &r.pc
+	#define REG_GNUM(num)     &r->regs[num]
+	#define REG_GET_FP()      &r->regs[29]
+	#define REG_GET_LR()      &r->regs[30]
+	#define REG_GET_SP()      &r->sp
+	#define REG_GET_PC()      &r->pc
 	Dump_ARM64()
 #elif defined __arm__
-	#define REG_GNUM(num)     &r.arm_r##num
-	#define REG_GET_FP()      &r.arm_fp
-	#define REG_GET_IP()      &r.arm_ip
-	#define REG_GET_SP()      &r.arm_sp
-	#define REG_GET_LR()      &r.arm_lr
-	#define REG_GET_PC()      &r.arm_pc
+	#define REG_GNUM(num)     &r->arm_r##num
+	#define REG_GET_FP()      &r->arm_fp
+	#define REG_GET_IP()      &r->arm_ip
+	#define REG_GET_SP()      &r->arm_sp
+	#define REG_GET_LR()      &r->arm_lr
+	#define REG_GET_PC()      &r->arm_pc
 	Dump_ARM32()
 #elif defined __alpha__
-	#define REG_GNUM(num)     &r.sc_regs[num]
-	#define REG_GET_FP()      &r.sc_regs[15]
-	#define REG_GET_PC()      &r.sc_pc
-	#define REG_GET_SP()      &r.sc_regs[30]
+	#define REG_GNUM(num)     &r->sc_regs[num]
+	#define REG_GET_FP()      &r->sc_regs[15]
+	#define REG_GET_PC()      &r->sc_pc
+	#define REG_GET_SP()      &r->sc_regs[30]
 	Dump_Alpha()
 #elif defined __sparc__
-	#define REG_GET(ign, reg) &r.gregs[REG_##reg]
+	#define REG_GET(ign, reg) &r->gregs[REG_##reg]
 	Dump_SPARC()
 #elif defined __PPC__ && __WORDSIZE == 32
-	#define REG_GNUM(num)     &r.gregs[num]
-	#define REG_GET_PC()      &r.gregs[32]
-	#define REG_GET_LR()      &r.gregs[35]
-	#define REG_GET_CTR()     &r.gregs[34]
+	#define REG_GNUM(num)     &r->gregs[num]
+	#define REG_GET_PC()      &r->gregs[32]
+	#define REG_GET_LR()      &r->gregs[35]
+	#define REG_GET_CTR()     &r->gregs[34]
 	Dump_PPC()
 #elif defined __PPC__
-	#define REG_GNUM(num)     &r.gp_regs[num]
-	#define REG_GET_PC()      &r.gp_regs[32]
+	#define REG_GNUM(num)     &r->gp_regs[num]
+	#define REG_GET_PC()      &r->gp_regs[32]
 	/* TODO this might be wrong, compare with PT_LNK in */
 	/* https://elixir.bootlin.com/linux/v4.19.122/source/arch/powerpc/include/uapi/asm/ptrace.h#L102 */
-	#define REG_GET_LR()      &r.gp_regs[35]
-	#define REG_GET_CTR()     &r.gp_regs[34]
+	#define REG_GET_LR()      &r->gp_regs[35]
+	#define REG_GET_CTR()     &r->gp_regs[34]
 	Dump_PPC()
 #elif defined __mips__
-	#define REG_GNUM(num)     &r.gregs[num]
-	#define REG_GET_PC()      &r.pc
-	#define REG_GET_LO()      &r.mdlo
-	#define REG_GET_HI()      &r.mdhi
+	#define REG_GNUM(num)     &r->gregs[num]
+	#define REG_GET_PC()      &r->pc
+	#define REG_GET_LO()      &r->mdlo
+	#define REG_GET_HI()      &r->mdhi
 	Dump_MIPS()
 #elif defined __riscv
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_PC()      &r.__gregs[REG_PC]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_PC()      &r->__gregs[REG_PC]
 	Dump_RISCV()
 #else
 	#error "Unknown CPU architecture"
@@ -622,16 +697,16 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 /* -> usr/src/uts/[ARCH]/sys/mcontext.h */
 /* -> usr/src/uts/[ARCH]/sys/regset.h */
 static void PrintRegisters(cc_string* str, void* ctx) {
-	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
+	mcontext_t* r = &((ucontext_t*)ctx)->uc_mcontext;
 
 #if defined __i386__
-	#define REG_GET(ign, reg) &r.gregs[E##reg]
+	#define REG_GET(ign, reg) &r->gregs[E##reg]
 	Dump_X86()
 #elif defined __x86_64__
-	#define REG_GET(ign, reg) &r.gregs[REG_R##reg]
+	#define REG_GET(ign, reg) &r->gregs[REG_R##reg]
 	Dump_X64()
 #elif defined __sparc__
-	#define REG_GET(ign, reg) &r.gregs[REG_##reg]
+	#define REG_GET(ign, reg) &r->gregs[REG_##reg]
 	Dump_SPARC()
 #else
 	#error "Unknown CPU architecture"
@@ -641,43 +716,43 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 /* See /usr/include/[ARCH]/mcontext.h */
 /* -> src/sys/arch/[ARCH]/include/mcontext.h */
 static void PrintRegisters(cc_string* str, void* ctx) {
-	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
+	mcontext_t* r = &((ucontext_t*)ctx)->uc_mcontext;
 #if defined __i386__
-	#define REG_GET(ign, reg) &r.__gregs[_REG_E##reg]
+	#define REG_GET(ign, reg) &r->__gregs[_REG_E##reg]
 	Dump_X86()
 #elif defined __x86_64__
-	#define REG_GET(ign, reg) &r.__gregs[_REG_R##reg]
+	#define REG_GET(ign, reg) &r->__gregs[_REG_R##reg]
 	Dump_X64()
 #elif defined __aarch64__
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_FP()      &r.__gregs[_REG_FP]
-	#define REG_GET_LR()      &r.__gregs[_REG_LR]
-	#define REG_GET_SP()      &r.__gregs[_REG_SP]
-	#define REG_GET_PC()      &r.__gregs[_REG_PC]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_FP()      &r->__gregs[_REG_FP]
+	#define REG_GET_LR()      &r->__gregs[_REG_LR]
+	#define REG_GET_SP()      &r->__gregs[_REG_SP]
+	#define REG_GET_PC()      &r->__gregs[_REG_PC]
 	Dump_ARM64()
 #elif defined __arm__
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_FP()      &r.__gregs[_REG_FP]
-	#define REG_GET_IP()      &r.__gregs[12]
-	#define REG_GET_SP()      &r.__gregs[_REG_SP]
-	#define REG_GET_LR()      &r.__gregs[_REG_LR]
-	#define REG_GET_PC()      &r.__gregs[_REG_PC]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_FP()      &r->__gregs[_REG_FP]
+	#define REG_GET_IP()      &r->__gregs[12]
+	#define REG_GET_SP()      &r->__gregs[_REG_SP]
+	#define REG_GET_LR()      &r->__gregs[_REG_LR]
+	#define REG_GET_PC()      &r->__gregs[_REG_PC]
 	Dump_ARM32()
 #elif defined __powerpc__
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_PC()      &r.__gregs[_REG_PC]
-	#define REG_GET_LR()      &r.__gregs[_REG_LR]
-	#define REG_GET_CTR()     &r.__gregs[_REG_CTR]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_PC()      &r->__gregs[_REG_PC]
+	#define REG_GET_LR()      &r->__gregs[_REG_LR]
+	#define REG_GET_CTR()     &r->__gregs[_REG_CTR]
 	Dump_PPC()
 #elif defined __mips__
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_PC()      &r.__gregs[_REG_EPC]
-	#define REG_GET_LO()      &r.__gregs[_REG_MDLO]
-	#define REG_GET_HI()      &r.__gregs[_REG_MDHI]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_PC()      &r->__gregs[_REG_EPC]
+	#define REG_GET_LO()      &r->__gregs[_REG_MDLO]
+	#define REG_GET_HI()      &r->__gregs[_REG_MDHI]
 	Dump_MIPS()
 #elif defined __riscv
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_PC()      &r.__gregs[_REG_PC]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_PC()      &r->__gregs[_REG_PC]
 	Dump_RISCV()
 #else
 	#error "Unknown CPU architecture"
@@ -687,39 +762,39 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 /* See /usr/include/machine/ucontext.h */
 /* -> src/sys/[ARCH]/include/ucontext.h */
 static void PrintRegisters(cc_string* str, void* ctx) {
-	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
+	mcontext_t* r = &((ucontext_t*)ctx)->uc_mcontext;
 #if defined __i386__
-	#define REG_GET(reg, ign) &r.mc_e##reg
+	#define REG_GET(reg, ign) &r->mc_e##reg
 	Dump_X86()
 #elif defined __x86_64__
-	#define REG_GET(reg, ign) &r.mc_r##reg
+	#define REG_GET(reg, ign) &r->mc_r##reg
 	Dump_X64()
 #elif defined __aarch64__
-	#define REG_GNUM(num)     &r.mc_gpregs.gp_x[num]
-	#define REG_GET_FP()      &r.mc_gpregs.gp_x[29]
-	#define REG_GET_LR()      &r.mc_gpregs.gp_lr
-	#define REG_GET_SP()      &r.mc_gpregs.gp_sp
-	#define REG_GET_PC()      &r.mc_gpregs.gp_elr
+	#define REG_GNUM(num)     &r->mc_gpregs.gp_x[num]
+	#define REG_GET_FP()      &r->mc_gpregs.gp_x[29]
+	#define REG_GET_LR()      &r->mc_gpregs.gp_lr
+	#define REG_GET_SP()      &r->mc_gpregs.gp_sp
+	#define REG_GET_PC()      &r->mc_gpregs.gp_elr
 	Dump_ARM64()
 #elif defined __arm__
-	#define REG_GNUM(num)     &r.__gregs[num]
-	#define REG_GET_FP()      &r.__gregs[_REG_FP]
-	#define REG_GET_IP()      &r.__gregs[12]
-	#define REG_GET_SP()      &r.__gregs[_REG_SP]
-	#define REG_GET_LR()      &r.__gregs[_REG_LR]
-	#define REG_GET_PC()      &r.__gregs[_REG_PC]
+	#define REG_GNUM(num)     &r->__gregs[num]
+	#define REG_GET_FP()      &r->__gregs[_REG_FP]
+	#define REG_GET_IP()      &r->__gregs[12]
+	#define REG_GET_SP()      &r->__gregs[_REG_SP]
+	#define REG_GET_LR()      &r->__gregs[_REG_LR]
+	#define REG_GET_PC()      &r->__gregs[_REG_PC]
 	Dump_ARM32()
 #elif defined __powerpc__
-	#define REG_GNUM(num)     &r.mc_frame[##num]
-	#define REG_GET_PC()      &r.mc_srr0
-	#define REG_GET_LR()      &r.mc_lr
-	#define REG_GET_CTR()     &r.mc_ctr
+	#define REG_GNUM(num)     &r->mc_frame[##num]
+	#define REG_GET_PC()      &r->mc_srr0
+	#define REG_GET_LR()      &r->mc_lr
+	#define REG_GET_CTR()     &r->mc_ctr
 	Dump_PPC()
 #elif defined __mips__
-	#define REG_GNUM(num)     &r.mc_regs[num]
-	#define REG_GET_PC()      &r.mc_pc
-	#define REG_GET_LO()      &r.mullo
-	#define REG_GET_HI()      &r.mulhi
+	#define REG_GNUM(num)     &r->mc_regs[num]
+	#define REG_GET_PC()      &r->mc_pc
+	#define REG_GET_LO()      &r->mullo
+	#define REG_GET_HI()      &r->mulhi
 	Dump_MIPS()
 #else
 	#error "Unknown CPU architecture"
@@ -768,26 +843,46 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 #endif
 }
 #elif defined CC_BUILD_HAIKU
+/* See /headers/posix/arch/[ARCH]/signal.h */
 static void PrintRegisters(cc_string* str, void* ctx) {
-	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
+	mcontext_t* r = &((ucontext_t*)ctx)->uc_mcontext;
 #if defined __i386__
-	#define REG_GET(reg, ign) &r.me##reg
+	#define REG_GET(reg, ign) &r->e##reg
 	Dump_X86()
 #elif defined __x86_64__
-	#define REG_GET(reg, ign) &r.r##reg
+	#define REG_GET(reg, ign) &r->r##reg
 	Dump_X64()
+#elif defined __aarch64__
+	#define REG_GNUM(num)     &r->x[num]
+	#define REG_GET_FP()      &r->x[29]
+	#define REG_GET_LR()      &r->lr
+	#define REG_GET_SP()      &r->sp
+	#define REG_GET_PC()      &r->elr
+	Dump_ARM64()
+#elif defined __arm__
+	#define REG_GNUM(num)     &r->r##num
+	#define REG_GET_FP()      &r->r11
+	#define REG_GET_IP()      &r->r12
+	#define REG_GET_SP()      &r->r13
+	#define REG_GET_LR()      &r->r14
+	#define REG_GET_PC()      &r->r15
+	Dump_ARM32()
+#elif defined __riscv
+	#define REG_GNUM(num)     &r->x[num - 1]
+	#define REG_GET_PC()      &r->pc
+	Dump_RISCV()
 #else
 	#error "Unknown CPU architecture"
 #endif
 }
 #elif defined CC_BUILD_SERENITY
 static void PrintRegisters(cc_string* str, void* ctx) {
-	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
+	mcontext_t* r = &((ucontext_t*)ctx)->uc_mcontext;
 #if defined __i386__
-	#define REG_GET(reg, ign) &r.e##reg
+	#define REG_GET(reg, ign) &r->e##reg
 	Dump_X86()
 #elif defined __x86_64__
-	#define REG_GET(reg, ign) &r.r##reg
+	#define REG_GET(reg, ign) &r->r##reg
 	Dump_X64()
 #else
 	#error "Unknown CPU architecture"
@@ -825,7 +920,36 @@ static void DumpRegisters(void* ctx) {
 *------------------------------------------------Module/Memory map handling-----------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
-static BOOL CALLBACK DumpModule(const char* name, ULONG_PTR base, ULONG size, void* ctx) {
+static void DumpStack(void) {
+	static const cc_string stack = String_FromConst("-- stack --\r\n");
+	cc_string str; char strBuffer[128];
+	cc_uint8 buffer[0x10];
+	SIZE_T numRead;
+	int i, j;
+
+	Logger_Log(&stack);
+	spRegister &= ~0x0F;
+	spRegister -= 0x40;
+
+	/* Dump 128 bytes near stack pointer */
+	for (i = 0; i < 8; i++, spRegister += 0x10) 
+	{
+		String_InitArray(str, strBuffer);
+		String_Format1(&str, "0x%x)", &spRegister);
+		ReadProcessMemory(CUR_PROCESS_HANDLE, (LPCVOID)spRegister, buffer, 0x10, &numRead);
+
+		for (j = 0; j < 0x10; j++)
+		{
+			if ((j & 0x03) == 0) String_Append(&str, ' ');
+			String_AppendHex(&str, buffer[j]);
+			String_Append(&str,    ' ');
+		}
+		String_AppendConst(&str, "\r\n");
+		Logger_Log(&str);
+	}
+}
+
+static BOOL CALLBACK DumpModule(const char* name, ULONG_PTR base, ULONG size, void* userCtx) {
 	cc_string str; char strBuffer[256];
 	cc_uintptr beg, end;
 
@@ -836,15 +960,14 @@ static BOOL CALLBACK DumpModule(const char* name, ULONG_PTR base, ULONG size, vo
 	Logger_Log(&str);
 	return true;
 }
-
-static BOOL (WINAPI *_EnumerateLoadedModules)(HANDLE process, PENUMLOADED_MODULES_CALLBACK callback, PVOID userContext);
-static void DumpMisc(void* ctx) {
+static BOOL  (WINAPI *_EnumerateLoadedModules)(HANDLE process, PENUMLOADED_MODULES_CALLBACK callback, PVOID userContext);
+static void DumpMisc(void) {
 	static const cc_string modules = String_FromConst("-- modules --\r\n");
-	HANDLE process = GetCurrentProcess();
+	if (spRegister >= 0xFFFF) DumpStack();
 
 	if (!_EnumerateLoadedModules) return;
 	Logger_Log(&modules);
-	_EnumerateLoadedModules(process, DumpModule, NULL);
+	_EnumerateLoadedModules(curProcess, DumpModule, NULL);
 }
 
 #elif defined CC_BUILD_LINUX || defined CC_BUILD_SOLARIS || defined CC_BUILD_ANDROID
@@ -897,7 +1020,7 @@ static int SkipRange(const cc_string* str) {
 }
 #endif
 
-static void DumpMisc(void* ctx) {
+static void DumpMisc(void) {
 	static const cc_string memMap = String_FromConst("-- memory map --\n");
 	cc_string str; char strBuffer[320];
 	int n, fd;
@@ -918,7 +1041,7 @@ static void DumpMisc(void* ctx) {
 #elif defined CC_BUILD_DARWIN
 #include <mach-o/dyld.h>
 
-static void DumpMisc(void* ctx) {
+static void DumpMisc(void) {
 	static const cc_string modules = String_FromConst("-- modules --\n");
 	static const cc_string newLine = String_FromConst(_NL);
 	cc_uint32 i, count;
@@ -940,7 +1063,7 @@ static void DumpMisc(void* ctx) {
 	}
 }
 #else
-static void DumpMisc(void* ctx) { }
+static void DumpMisc(void) { }
 #endif
 
 
@@ -948,17 +1071,32 @@ static void DumpMisc(void* ctx) { }
 *--------------------------------------------------Unhandled error logging------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
+static const char* ExceptionDescribe(cc_uint32 code) {
+	switch (code) {
+	case EXCEPTION_ACCESS_VIOLATION:    return "ACCESS_VIOLATION";
+	case EXCEPTION_ILLEGAL_INSTRUCTION: return "ILLEGAL_INSTRUCTION";
+	case EXCEPTION_INT_DIVIDE_BY_ZERO:  return "DIVIDE_BY_ZERO";
+	}
+	return NULL;
+}
+
 static LONG WINAPI UnhandledFilter(struct _EXCEPTION_POINTERS* info) {
 	cc_string msg; char msgBuffer[128 + 1];
+	const char* desc;
 	cc_uint32 code;
 	cc_uintptr addr;
 	DWORD i, numArgs;
 
-	code = (cc_uint32)info->ExceptionRecord->ExceptionCode;
+	code =  (cc_uint32)info->ExceptionRecord->ExceptionCode;
 	addr = (cc_uintptr)info->ExceptionRecord->ExceptionAddress;
+	desc = ExceptionDescribe(code);
 
 	String_InitArray_NT(msg, msgBuffer);
-	String_Format2(&msg, "Unhandled exception 0x%h at %x", &code, &addr);
+	if (desc) {
+		String_Format2(&msg, "Unhandled %c error at %x", desc, &addr);
+	} else {
+		String_Format2(&msg, "Unhandled exception 0x%h at %x", &code, &addr);
+	}
 
 	numArgs = info->ExceptionRecord->NumberParameters;
 	if (numArgs) {
@@ -980,20 +1118,52 @@ void Logger_Hook(void) {
 	static const struct DynamicLibSym funcs[] = {
 	#ifdef _IMAGEHLP64
 		{ "EnumerateLoadedModules64", (void**)&_EnumerateLoadedModules},
+		{ "SymFunctionTableAccess64", (void**)&_SymFunctionTableAccess},
+		{ "SymGetModuleBase64",       (void**)&_SymGetModuleBase },
+		{ "SymGetModuleInfo64",       (void**)&_SymGetModuleInfo },
+		{ "SymGetSymFromAddr64",      (void**)&_SymGetSymFromAddr },
+		{ "SymInitialize",            (void**)&_SymInitialize },
 	#else
 		{ "EnumerateLoadedModules",   (void**)&_EnumerateLoadedModules },
+		{ "SymFunctionTableAccess",   (void**)&_SymFunctionTableAccess },
+		{ "SymGetModuleBase",         (void**)&_SymGetModuleBase },
+		{ "SymGetModuleInfo",         (void**)&_SymGetModuleInfo },
+		{ "SymGetSymFromAddr",        (void**)&_SymGetSymFromAddr },
+		{ "SymInitialize",            (void**)&_SymInitialize },
 	#endif
 	};
 	static const cc_string imagehlp = String_FromConst("IMAGEHLP.DLL");
+	OSVERSIONINFOA osInfo;
 	void* lib;
 
 	SetUnhandledExceptionFilter(UnhandledFilter);
 	DynamicLib_LoadAll(&imagehlp, funcs, Array_Elems(funcs), &lib);
-	
+
+	/* Windows 9x requires process IDs instead - see old DBGHELP docs */
+	/*   https://documentation.help/DbgHelp/documentation.pdf */
+	osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOA);
+	osInfo.dwPlatformId        = 0;
+	GetVersionExA(&osInfo);
+
+	if (osInfo.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS) {
+		curProcess = (HANDLE)((cc_uintptr)GetCurrentProcessId());
+	}
 }
 #elif defined CC_BUILD_POSIX
+static const char* SignalDescribe(int type) {
+	switch (type) {
+	case SIGSEGV: return "SIGSEGV";
+	case SIGBUS:  return "SIGBUS";
+	case SIGILL:  return "SIGILL";
+	case SIGABRT: return "SIGABRT";
+	case SIGFPE:  return "SIGFPE";
+	}
+	return NULL;
+}
+
 static void SignalHandler(int sig, siginfo_t* info, void* ctx) {
 	cc_string msg; char msgBuffer[128 + 1];
+	const char* desc;
 	int type, code;
 	cc_uintptr addr;
 
@@ -1007,9 +1177,14 @@ static void SignalHandler(int sig, siginfo_t* info, void* ctx) {
 	type = info->si_signo;
 	code = info->si_code;
 	addr = (cc_uintptr)info->si_addr;
+	desc = SignalDescribe(type);
 
 	String_InitArray_NT(msg, msgBuffer);
-	String_Format3(&msg, "Unhandled signal %i (code %i) at %x", &type, &code, &addr);
+	if (desc) {
+		String_Format3(&msg, "Unhandled signal %c (code %i) at %x", desc,  &code, &addr);
+	} else {
+		String_Format3(&msg, "Unhandled signal %i (code %i) at %x", &type, &code, &addr);
+	}
 	msg.buffer[msg.length] = '\0';
 
 	#if defined CC_BUILD_ANDROID
@@ -1102,7 +1277,7 @@ void Logger_Log(const cc_string* msg) {
 		Stream_AppendFile(&logStream, &path);
 	}
 
-	if (!logStream.Meta.File) return;
+	if (!logStream.meta.file) return;
 	Stream_Write(&logStream, (const cc_uint8*)msg->buffer, msg->length);
 }
 
@@ -1122,17 +1297,17 @@ static void LogCrashHeader(void) {
 }
 
 static void CloseLogFile(void) { 
-	if (logStream.Meta.File) logStream.Close(&logStream);
+	if (logStream.meta.file) logStream.Close(&logStream);
 }
 #endif
 
-#if defined CC_BUILD_D3D11
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_D3D11
 	#define GFX_BACKEND " (Direct3D11)"
-#elif defined CC_BUILD_D3D9
+#elif CC_GFX_BACKEND == CC_GFX_BACKEND_D3D9
 	#define GFX_BACKEND " (Direct3D9)"
-#elif defined CC_BUILD_GLMODERN
+#elif CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
 	#define GFX_BACKEND " (ModernGL)"
-#elif defined CC_BUILD_GL
+#elif CC_GFX_BACKEND == CC_GFX_BACKEND_GL1
 	#define GFX_BACKEND " (OpenGL)"
 #else
 	#define GFX_BACKEND " (Unknown)"
@@ -1166,7 +1341,7 @@ static void AbortCommon(cc_result result, const char* raw_msg, void* ctx) {
 	Logger_Log(&backtrace);
 	Logger_Backtrace(&msg, ctx);
 
-	DumpMisc(ctx);
+	DumpMisc();
 	CloseLogFile();
 
 	msg.buffer[msg.length] = '\0';
@@ -1184,3 +1359,99 @@ void Logger_FailToStart(const char* raw_msg) {
 	Logger_Log(&msg);
 	Process_Exit(1);
 }
+
+
+#if defined CC_BACKTRACE_UNWIND
+#include <unwind.h>
+
+static _Unwind_Reason_Code UnwindFrame(struct _Unwind_Context* ctx, void* arg) {
+	cc_uintptr addr = _Unwind_GetIP(ctx);
+	if (!addr) return _URC_END_OF_STACK;
+
+	DumpFrame((cc_string*)arg, (void*)addr);
+	return _URC_NO_REASON;
+}
+
+void Logger_Backtrace(cc_string* trace, void* ctx) {
+	_Unwind_Backtrace(UnwindFrame, trace);
+	String_AppendConst(trace, _NL);
+}
+#endif
+
+#if defined CC_BACKTRACE_BUILTIN
+static CC_NOINLINE void* GetReturnAddress(int level) {
+	/* "... a value of 0 yields the return address of the current function, a value of 1 yields the return address of the caller of the current function" */
+	switch(level) {
+	case 0:  return __builtin_return_address(1);
+	case 1:  return __builtin_return_address(2);
+	case 2:  return __builtin_return_address(3);
+	case 3:  return __builtin_return_address(4);
+	case 4:  return __builtin_return_address(5);
+	case 5:  return __builtin_return_address(6);
+	case 6:  return __builtin_return_address(7);
+	case 7:  return __builtin_return_address(8);
+	case 8:  return __builtin_return_address(9);
+	case 9:  return __builtin_return_address(10);
+	case 10: return __builtin_return_address(11);
+	case 11: return __builtin_return_address(12);
+	case 12: return __builtin_return_address(13);
+	case 13: return __builtin_return_address(14);
+	case 14: return __builtin_return_address(15);
+	case 15: return __builtin_return_address(16);
+	case 16: return __builtin_return_address(17);
+	case 17: return __builtin_return_address(18);
+	case 18: return __builtin_return_address(19);
+	case 19: return __builtin_return_address(20);
+	case 20: return __builtin_return_address(21);
+	default: return NULL;
+	}
+}
+
+static CC_NOINLINE void* GetFrameAddress(int level) {
+	/* "... a value of 0 yields the frame address of the current function, a value of 1 yields the frame address of the caller of the current function, and so forth." */
+	switch(level) {
+	case 0:  return __builtin_frame_address(1);
+	case 1:  return __builtin_frame_address(2);
+	case 2:  return __builtin_frame_address(3);
+	case 3:  return __builtin_frame_address(4);
+	case 4:  return __builtin_frame_address(5);
+	case 5:  return __builtin_frame_address(6);
+	case 6:  return __builtin_frame_address(7);
+	case 7:  return __builtin_frame_address(8);
+	case 8:  return __builtin_frame_address(9);
+	case 9:  return __builtin_frame_address(10);
+	case 10: return __builtin_frame_address(11);
+	case 11: return __builtin_frame_address(12);
+	case 12: return __builtin_frame_address(13);
+	case 13: return __builtin_frame_address(14);
+	case 14: return __builtin_frame_address(15);
+	case 15: return __builtin_frame_address(16);
+	case 16: return __builtin_frame_address(17);
+	case 17: return __builtin_frame_address(18);
+	case 18: return __builtin_frame_address(19);
+	case 19: return __builtin_frame_address(20);
+	case 20: return __builtin_frame_address(21);
+	default: return NULL;
+	}
+}
+
+void Logger_Backtrace(cc_string* trace, void* ctx) {
+	void* addrs[MAX_BACKTRACE_FRAMES];
+	int i, frames;
+	
+	/* See https://gcc.gnu.org/onlinedocs/gcc/Return-Address.html */
+	/*   Note "Calling this function with a nonzero argument can have unpredictable effects, including crashing the calling program" */
+	/*   So this probably only works on x86/x86_64 */
+	for (i = 0; GetFrameAddress(i + 1) && i < MAX_BACKTRACE_FRAMES; i++)
+	{
+		addrs[i] = GetReturnAddress(i);
+		if (!addrs[i]) break;
+	}	
+
+	frames = i;
+	for (i = 0; i < frames; i++) {
+		DumpFrame(trace, addrs[i]);
+	}
+	String_AppendConst(trace, _NL);
+}
+#endif

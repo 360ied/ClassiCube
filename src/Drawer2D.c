@@ -55,7 +55,6 @@ void Font_Make(struct FontDesc* desc, int size, int flags) {
 }
 
 void Font_Free(struct FontDesc* desc) {
-	struct SysFont* font;
 	desc->size = 0;
 	if (Font_IsBitmap(desc)) return;
 
@@ -153,13 +152,18 @@ void Context2D_Alloc(struct Context2D* ctx, int width, int height) {
 	ctx->height = height;
 	ctx->meta   = NULL;
 
-	/* Allocates a power-of-2 sized bitmap equal to or greater than the given size, and clears it to 0 */
-	width  = Math_NextPowOf2(width);
-	height = Math_NextPowOf2(height);
+	if (!Gfx.SupportsNonPowTwoTextures) {
+		/* Allocate power-of-2 sized bitmap equal to or greater than the given size */
+		width  = Math_NextPowOf2(width);
+		height = Math_NextPowOf2(height);
+	}
+	
+	if (Gfx.MinTexWidth)  { width  = max(width,  Gfx.MinTexWidth);  }
+	if (Gfx.MinTexHeight) { height = max(height, Gfx.MinTexHeight); }
 
 	ctx->bmp.width  = width; 
 	ctx->bmp.height = height;
-	ctx->bmp.scan0  = (BitmapCol*)Mem_AllocCleared(width * height, 4, "bitmap data");
+	ctx->bmp.scan0  = (BitmapCol*)Mem_AllocCleared(width * height, BITMAPCOLOR_SIZE, "bitmap data");
 }
 
 void Context2D_Wrap(struct Context2D* ctx, struct Bitmap* bmp) {
@@ -173,13 +177,17 @@ void Context2D_Free(struct Context2D* ctx) {
 	Mem_Free(ctx->bmp.scan0);
 }
 
+#define BitmapColor_Raw(r, g, b) (BitmapColor_R_Bits(r) | BitmapColor_G_Bits(g) | BitmapColor_B_Bits(b))
 void Gradient_Noise(struct Context2D* ctx, BitmapCol color, int variation,
 					int x, int y, int width, int height) {
 	struct Bitmap* bmp = (struct Bitmap*)ctx;
 	BitmapCol* dst;
 	int R, G, B, xx, yy, n;
-	float noise;
+	int noise, delta;
+	cc_uint32 alpha;
+
 	if (!Drawer2D_Clamp(ctx, &x, &y, &width, &height)) return;
+	alpha = color & BITMAPCOLOR_A_MASK;
 
 	for (yy = 0; yy < height; yy++) {
 		dst = Bitmap_GetRow(bmp, y + yy) + x;
@@ -187,13 +195,20 @@ void Gradient_Noise(struct Context2D* ctx, BitmapCol color, int variation,
 		for (xx = 0; xx < width; xx++, dst++) {
 			n = (x + xx) + (y + yy) * 57;
 			n = (n << 13) ^ n;
-			noise = 1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f;
 
-			R = BitmapCol_R(color) + (int)(noise * variation); Drawer2D_ClampPixel(R);
-			G = BitmapCol_G(color) + (int)(noise * variation); Drawer2D_ClampPixel(G);
-			B = BitmapCol_B(color) + (int)(noise * variation); Drawer2D_ClampPixel(B);
+			/*
+				float noise = 1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f;
+				int delta = (int)(noise * variation);
+			*/
+			/* Fixed point equivalent to the above expression */
+			noise = ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff);
+			delta = (((1024 - noise / 0x100000)) * variation) >> 10;
 
-			*dst = BitmapColor_RGB(R, G, B);
+			R = BitmapCol_R(color) + delta; Drawer2D_ClampPixel(R);
+			G = BitmapCol_G(color) + delta; Drawer2D_ClampPixel(G);
+			B = BitmapCol_B(color) + delta; Drawer2D_ClampPixel(B);
+
+			*dst = BitmapColor_Raw(R, G, B) | alpha;
 		}
 	}
 }
@@ -300,13 +315,16 @@ void Drawer2D_MakeTextTexture(struct Texture* tex, struct DrawTextArgs* args) {
 }
 
 void Context2D_MakeTexture(struct Texture* tex, struct Context2D* ctx) {
-	Gfx_RecreateTexture(&tex->ID, &ctx->bmp, 0, false);
-	tex->Width  = ctx->width;
-	tex->Height = ctx->height;
-
-	tex->uv.U1 = 0.0f; tex->uv.V1 = 0.0f;
-	tex->uv.U2 = (float)ctx->width  / (float)ctx->bmp.width;
-	tex->uv.V2 = (float)ctx->height / (float)ctx->bmp.height;
+	int flags = TEXTURE_FLAG_NONPOW2 | TEXTURE_FLAG_LOWRES;
+	Gfx_RecreateTexture(&tex->ID, &ctx->bmp, flags, false);
+	
+	/* TODO need to find a better solution in NoUVSupport case */
+	tex->width  = Gfx.NoUVSupport ? ctx->bmp.width  : ctx->width;
+	tex->height = Gfx.NoUVSupport ? ctx->bmp.height : ctx->height;
+	
+	tex->uv.u1  = 0.0f; tex->uv.v1 = 0.0f;
+	tex->uv.u2  = (float)ctx->width  / (float)ctx->bmp.width;
+	tex->uv.v2  = (float)ctx->height / (float)ctx->bmp.height;
 }
 
 cc_bool Drawer2D_ValidColorCodeAt(const cc_string* text, int i) {
@@ -392,10 +410,10 @@ void Drawer2D_ReducePadding_Tex(struct Texture* tex, int point, int scale) {
 	float vAdj;
 	if (!Drawer2D.BitmappedText) return;
 
-	padding = (tex->Height - point) / scale;
-	vAdj    = (float)padding / Math_NextPowOf2(tex->Height);
-	tex->uv.V1 += vAdj; tex->uv.V2 -= vAdj;
-	tex->Height -= (cc_uint16)(padding * 2);
+	padding = (tex->height - point) / scale;
+	vAdj    = (float)padding / Math_NextPowOf2(tex->height);
+	tex->uv.v1 += vAdj; tex->uv.v2 -= vAdj;
+	tex->height -= (cc_uint16)(padding * 2);
 }
 
 void Drawer2D_ReducePadding_Height(int* height, int point, int scale) {
@@ -522,6 +540,12 @@ static void DrawBitmappedTextCore(struct Bitmap* bmp, struct DrawTextArgs* args,
 static void DrawBitmappedText(struct Bitmap* bmp, struct DrawTextArgs* args, int x, int y) {
 	int offset = Drawer2D_ShadowOffset(args->font->size);
 
+	if (!fontBitmap.scan0) {
+		if (args->useShadow) FallbackFont_DrawText(args, bmp, x, y, true);
+		FallbackFont_DrawText(args, bmp, x, y, false);
+		return;
+	}
+
 	if (args->useShadow) {
 		DrawBitmappedTextCore(bmp, args, x + offset, y + offset, true);
 	}
@@ -532,6 +556,8 @@ static int MeasureBitmappedWidth(const struct DrawTextArgs* args) {
 	int i, point = args->font->size;
 	int xPadding, width;
 	cc_string text;
+
+	if (!fontBitmap.scan0) return FallbackFont_TextWidth(args);
 
 	/* adjust coords to make drawn text match GDI fonts */
 	xPadding = Drawer2D_XPadding(point);
@@ -634,26 +660,39 @@ static void DefaultPngProcess(struct Stream* stream, const cc_string* name) {
 static struct TextureEntry default_entry = { "default.png", DefaultPngProcess };
 
 
-static void InitHexEncodedColor(int i, int hex, cc_uint8 lo, cc_uint8 hi) {
-	Drawer2D.Colors[i] = BitmapColor_RGB(
-		lo * ((hex >> 2) & 1) + hi * (hex >> 3),
-		lo * ((hex >> 1) & 1) + hi * (hex >> 3),
-		lo * ((hex >> 0) & 1) + hi * (hex >> 3));
-}
+/* The default 16 colours are the CGA 16 color palette (without special brown colour) */
+/*   See https://en.wikipedia.org/wiki/Color_Graphics_Adapter#With_an_RGBI_monitor for reference */
+/* The 16 hex colours below were produced from the following formula: */
+/*   R = 191 * ((hex >> 2) & 1) + 64 * (hex >> 3) */
+/*   G = 191 * ((hex >> 1) & 1) + 64 * (hex >> 3) */
+/*   B = 191 * ((hex >> 0) & 1) + 64 * (hex >> 3) */
+static const BitmapCol defaults_0_9[] = {
+	BitmapColor_RGB(  0,   0,   0), /* 0 */
+	BitmapColor_RGB(  0,   0, 191), /* 1 */
+	BitmapColor_RGB(  0, 191,   0), /* 2 */
+	BitmapColor_RGB(  0, 191, 191), /* 3 */
+	BitmapColor_RGB(191,   0,   0), /* 4 */
+	BitmapColor_RGB(191,   0, 191), /* 5 */
+	BitmapColor_RGB(191, 191,   0), /* 6 */
+	BitmapColor_RGB(191, 191, 191), /* 7 */
+	BitmapColor_RGB( 64,  64,  64), /* 8 */
+	BitmapColor_RGB( 64,  64, 255)  /* 9 */
+};
+static const BitmapCol defaults_a_f[] = {
+	BitmapColor_RGB( 64, 255,  64), /* A */
+	BitmapColor_RGB( 64, 255, 255), /* B */
+	BitmapColor_RGB(255,  64,  64), /* C */
+	BitmapColor_RGB(255,  64, 255), /* D */
+	BitmapColor_RGB(255, 255,  64), /* E */
+	BitmapColor_RGB(255, 255, 255), /* F */
+};
 
 static void OnReset(void) {
-	int i;	
-	for (i = 0; i < DRAWER2D_MAX_COLORS; i++) {
-		Drawer2D.Colors[i] = 0;
-	}
+	Mem_Set(Drawer2D.Colors, 0, sizeof(Drawer2D.Colors));
 
-	for (i = 0; i <= 9; i++) {
-		InitHexEncodedColor('0' + i, i, 191, 64);
-	}
-	for (i = 10; i <= 15; i++) {
-		InitHexEncodedColor('a' + (i - 10), i, 191, 64);
-		InitHexEncodedColor('A' + (i - 10), i, 191, 64);
-	}
+	Mem_Copy(&Drawer2D.Colors['0'], defaults_0_9, sizeof(defaults_0_9));
+	Mem_Copy(&Drawer2D.Colors['a'], defaults_a_f, sizeof(defaults_a_f));
+	Mem_Copy(&Drawer2D.Colors['A'], defaults_a_f, sizeof(defaults_a_f));
 }
 
 static void OnInit(void) {

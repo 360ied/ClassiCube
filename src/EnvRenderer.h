@@ -1,9 +1,11 @@
 #ifndef CC_ENVRENDERER_H
 #define CC_ENVRENDERER_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Renders environment of the map (clouds, sky, fog, map sides/edges, skybox, rain/snow)
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct IGameComponent;
 extern struct IGameComponent EnvRenderer_Component;
@@ -31,7 +33,7 @@ extern cc_int16* Weather_Heightmap;
 /* Called when a block is changed to update internal weather state. */
 void EnvRenderer_OnBlockChanged(int x, int y, int z, BlockID oldBlock, BlockID newBlock);
 /* Renders rainfall/snowfall weather. */
-void EnvRenderer_RenderWeather(double deltaTime);
+void EnvRenderer_RenderWeather(float delta);
 
 /* Whether large quads are broken down into smaller quads. */
 /* This makes them have less rendering issues when using vertex fog. */
@@ -44,4 +46,6 @@ void EnvRenderer_SetMode(int flags);
 /* Calculates mode flags for the given mode. */
 /* mode can be: normal, normalfast, legacy, legacyfast */
 CC_NOINLINE int EnvRenderer_CalcFlags(const cc_string* mode);
+
+CC_END_HEADER
 #endif

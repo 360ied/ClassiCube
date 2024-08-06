@@ -24,8 +24,13 @@ cc_bool Utils_IsUrlPrefix(const cc_string* value) {
 }
 
 cc_bool Utils_EnsureDirectory(const char* dirName) {
-	cc_string dir = String_FromReadonly(dirName);
-	cc_result res = Directory_Create(&dir);
+	cc_filepath path;
+	cc_string dir;
+	cc_result res;
+	
+	dir = String_FromReadonly(dirName);
+	Platform_EncodePath(&path, &dir);
+	res = Directory_Create(&path);
 
 	if (!res || res == ReturnCode_DirectoryExists) return true;
 	Logger_SysWarn2(res, "creating directory", &dir);
@@ -137,6 +142,19 @@ void Utils_Resize(void** buffer, int* capacity, cc_uint32 elemSize, int defCapac
 		*buffer = Mem_Realloc(*buffer, newCapacity, elemSize, "resizing array");
 	}
 }
+
+void Utils_SwapEndian16(cc_int16* values, int numValues) {
+	cc_uint8* data = (cc_uint8*)values;
+	int i;
+
+	for (i = 0; i < numValues * 2; i += 2)
+	{
+		cc_uint8 tmp = data[i + 0];
+		data[i + 0]  = data[i + 1];
+		data[i + 1]  = tmp;
+	}
+}
+
 
 static const char base64_table[64] = {
 	'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P',
@@ -346,4 +364,37 @@ int EntryList_Find(struct StringsBuffer* list, const cc_string* key, char separa
 		if (String_CaselessEquals(key, &curKey)) return i;
 	}
 	return -1;
+}
+
+
+/*########################################################################################################################*
+*--------------------------------------------------------Direct URL-------------------------------------------------------*
+*#########################################################################################################################*/
+cc_bool DirectUrl_Claims(const cc_string* input, cc_string* addr, cc_string* user, cc_string* mppass) {
+	static const cc_string prefix = String_FromConst("mc://");
+	cc_string parts[6];
+	if (!String_CaselessStarts(input, &prefix)) return false;
+
+	/* mc://[ip:port]/[username]/[mppass] */
+	if (String_UNSAFE_Split(input, '/', parts, 6) != 5) return false;
+
+	*addr   = parts[2];
+	*user   = parts[3];
+	*mppass = parts[4];
+	return true;
+}
+
+cc_bool DirectUrl_ExtractAddress(const cc_string* addr, cc_string* ip, cc_string* port, int* portNum) {
+	static const cc_string defPort   = String_FromConst("25565");
+	int index = String_LastIndexOf(addr, ':');
+
+	/* support either "[IP]" or "[IP]:[PORT]" */
+	if (index == -1) {
+		*ip   = *addr;
+		*port = defPort;
+	} else {
+		*ip   = String_UNSAFE_Substring(addr, 0, index);
+		*port = String_UNSAFE_SubstringAt(addr, index + 1);
+	}
+	return Convert_ParseInt(port, portNum) && *portNum >= 0 && *portNum <= 65535;
 }

@@ -1,12 +1,14 @@
 #ifndef CC_TEXPACKS_H
 #define CC_TEXPACKS_H
 #include "Bitmap.h"
+CC_BEGIN_HEADER
+
 /* 
 Contains everything relating to texture packs
   - Extracting the textures from a .zip archive
   - Caching terrain atlases and texture packs to avoid redundant downloads
   - Terrain atlas (including breaking it down into multiple 1D atlases)
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 struct Stream;
@@ -20,9 +22,9 @@ extern struct IGameComponent Textures_Component;
 #define ATLAS2D_SHIFT 4
 /* Maximum supported number of rows in the atlas. */
 #ifdef EXTENDED_TEXTURES
-#define ATLAS2D_MAX_ROWS_COUNT 32
+	#define ATLAS2D_MAX_ROWS_COUNT 32
 #else
-#define ATLAS2D_MAX_ROWS_COUNT 16
+	#define ATLAS2D_MAX_ROWS_COUNT 16
 #endif
 /* Maximum possible number of 1D terrain atlases. (worst case, each 1D atlas only has 1 tile) */
 #define ATLAS1D_MAX_ATLASES (ATLAS2D_TILES_PER_ROW * ATLAS2D_MAX_ROWS_COUNT)
@@ -53,8 +55,10 @@ CC_VAR extern struct _Atlas1DData {
 
 /* URL of the current custom texture pack, can be empty */
 extern cc_string TexturePack_Url;
-/* Path to the default texture pack to use */
+/* Path to the user selected custom texture pack to use */
 extern cc_string TexturePack_Path;
+/* Whether the default texture pack and its alternatives were all not found */
+extern cc_bool TexturePack_DefaultMissing;
 
 #define Atlas2D_TileX(texLoc) ((texLoc) &  ATLAS2D_MASK)  /* texLoc % ATLAS2D_TILES_PER_ROW */
 #define Atlas2D_TileY(texLoc) ((texLoc) >> ATLAS2D_SHIFT) /* texLoc / ATLAS2D_TILES_PER_ROW */
@@ -71,6 +75,7 @@ cc_bool Atlas_TryChange(struct Bitmap* bmp);
 /* That is, returns U1/U2/V1/V2 coords that make up the tile in a 1D atlas. */
 /* index is set to the index of the 1D atlas that the tile is in. */
 TextureRec Atlas1D_TexRec(TextureLoc texLoc, int uCount, int* index);
+void Atlas1D_Bind(int index);
 
 /* Whether the given URL is in list of accepted URLs. */
 cc_bool TextureCache_HasAccepted(const cc_string* url);
@@ -100,6 +105,9 @@ void TexturePack_CheckPending(void);
 /* then asynchronously downloads the texture pack from the given URL. */
 CC_API void TexturePack_Extract(const cc_string* url);
 
+typedef cc_result (*DefaultZipCallback)(const cc_string* path);
+cc_result TexturePack_ExtractDefault(DefaultZipCallback callback);
+
 struct TextureEntry;
 struct TextureEntry {
 	const char* filename;
@@ -107,4 +115,6 @@ struct TextureEntry {
 	struct TextureEntry* next;
 };
 void TextureEntry_Register(struct TextureEntry* entry);
+
+CC_END_HEADER
 #endif

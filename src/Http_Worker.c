@@ -1,18 +1,10 @@
 #include "Core.h"
 #ifndef CC_BUILD_WEB
 #include "_HttpBase.h"
-static void* workerWaitable;
-static void* workerThread;
-static void* pendingMutex;
-static struct RequestList pendingReqs;
-
-static void* curRequestMutex;
-static struct HttpRequest http_curRequest;
-static volatile int http_curProgress = HTTP_PROGRESS_NOT_WORKING_ON;
 
 /* Allocates initial data buffer to store response contents */
 static void Http_BufferInit(struct HttpRequest* req) {
-	http_curProgress = 0;
+	req->progress  = 0;
 	req->_capacity = req->contentLength ? req->contentLength : 1;
 	req->data      = (cc_uint8*)Mem_Alloc(req->_capacity, 1, "http data");
 	req->size      = 0;
@@ -30,26 +22,13 @@ static void Http_BufferEnsure(struct HttpRequest* req, cc_uint32 amount) {
 /* Increases size and updates current progress */
 static void Http_BufferExpanded(struct HttpRequest* req, cc_uint32 read) {
 	req->size += read;
-	if (req->contentLength) http_curProgress = (int)(100.0f * req->size / req->contentLength);
+	if (req->contentLength) req->progress = (int)(100.0f * req->size / req->contentLength);
 }
 
 
 /*########################################################################################################################*
-*--------------------------------------------------Common downloader code-------------------------------------------------*
+*---------------------------------------------------Common backend code---------------------------------------------------*
 *#########################################################################################################################*/
-/* Sets up state to begin a http request */
-static void Http_BeginRequest(struct HttpRequest* req, cc_string* url) {
-	Http_GetUrl(req, url);
-	Platform_Log2("Fetching %s (type %b)", url, &req->requestType);
-
-	Mutex_Lock(curRequestMutex);
-	{
-		http_curRequest  = *req;
-		http_curProgress = HTTP_PROGRESS_MAKING_REQUEST;
-	}
-	Mutex_Unlock(curRequestMutex);
-}
-
 static void Http_ParseCookie(struct HttpRequest* req, const cc_string* value) {
 	cc_string name, data;
 	int dataEnd;
@@ -60,6 +39,14 @@ static void Http_ParseCookie(struct HttpRequest* req, const cc_string* value) {
 	if (dataEnd >= 0) data.length = dataEnd;
 
 	EntryList_Set(req->cookies, &name, &data, '=');
+}
+
+static void Http_ParseContentLength(struct HttpRequest* req, const cc_string* value) {
+	int contentLen = 0;
+	Convert_ParseInt(value, &contentLen);
+	
+	if (contentLen <= 0) return;
+	req->contentLength = contentLen;
 }
 
 /* Parses a HTTP header */
@@ -79,11 +66,11 @@ static void Http_ParseHeader(struct HttpRequest* req, const cc_string* line) {
 	if (String_CaselessEqualsConst(&name, "ETag")) {
 		String_CopyToRawArray(req->etag, &value);
 	} else if (String_CaselessEqualsConst(&name, "Content-Length")) {
-		Convert_ParseInt(&value, &req->contentLength);
+		Http_ParseContentLength(req, &value);
 	} else if (String_CaselessEqualsConst(&name, "X-Dropbox-Content-Length")) {
 		/* dropbox stopped returning Content-Length header since switching to chunked transfer */
 		/*  https://www.dropboxforum.com/t5/Discuss-Dropbox-Developer-API/Dropbox-media-can-t-be-access-by-azure-blob/td-p/575458 */
-		Convert_ParseInt(&value, &req->contentLength);
+		Http_ParseContentLength(req, &value);
 	} else if (String_CaselessEqualsConst(&name, "Last-Modified")) {
 		String_CopyToRawArray(req->lastModified, &value);
 	} else if (req->cookies && String_CaselessEqualsConst(&name, "Set-Cookie")) {
@@ -121,72 +108,15 @@ static void Http_SetRequestHeaders(struct HttpRequest* req) {
 	Http_AddHeader(req, "Cookie", &cookies);
 }
 
-static void Http_SignalWorker(void) { Waitable_Signal(workerWaitable); }
+/* TODO: Rewrite to use a local variable instead */
+static cc_string* Http_GetUserAgent_UNSAFE(void) {
+	static char userAgentBuffer[STRING_SIZE];
+	static cc_string userAgent;
 
-/* Adds a req to the list of pending requests, waking up worker thread if needed */
-static void HttpBackend_Add(struct HttpRequest* req, cc_uint8 flags) {
-	Mutex_Lock(pendingMutex);
-	{	
-		RequestList_Append(&pendingReqs, req, flags);
-	}
-	Mutex_Unlock(pendingMutex);
-	Http_SignalWorker();
-}
-
-
-/*########################################################################################################################*
-*----------------------------------------------------Http public api------------------------------------------------------*
-*#########################################################################################################################*/
-cc_bool Http_GetResult(int reqID, struct HttpRequest* item) {
-	int i;
-	Mutex_Lock(processedMutex);
-	{
-		i = RequestList_Find(&processedReqs, reqID);
-		if (i >= 0) *item = processedReqs.entries[i];
-		if (i >= 0) RequestList_RemoveAt(&processedReqs, i);
-	}
-	Mutex_Unlock(processedMutex);
-	return i >= 0;
-}
-
-cc_bool Http_GetCurrent(int* reqID, int* progress) {
-	Mutex_Lock(curRequestMutex);
-	{
-		*reqID    = http_curRequest.id;
-		*progress = http_curProgress;
-	}
-	Mutex_Unlock(curRequestMutex);
-	return *reqID != 0;
-}
-
-int Http_CheckProgress(int reqID) {
-	int curReqID, progress;
-	Http_GetCurrent(&curReqID, &progress);
-
-	if (reqID != curReqID) progress = HTTP_PROGRESS_NOT_WORKING_ON;
-	return progress;
-}
-
-void Http_ClearPending(void) {
-	Mutex_Lock(pendingMutex);
-	{
-		RequestList_Free(&pendingReqs);
-	}
-	Mutex_Unlock(pendingMutex);
-}
-
-void Http_TryCancel(int reqID) {
-	Mutex_Lock(pendingMutex);
-	{
-		RequestList_TryFree(&pendingReqs, reqID);
-	}
-	Mutex_Unlock(pendingMutex);
-
-	Mutex_Lock(processedMutex);
-	{
-		RequestList_TryFree(&processedReqs, reqID);
-	}
-	Mutex_Unlock(processedMutex);
+	String_InitArray(userAgent, userAgentBuffer);
+	String_AppendConst(&userAgent, GAME_APP_NAME);
+	String_AppendConst(&userAgent, Platform_AppNameSuffix);
+	return &userAgent;
 }
 
 
@@ -257,6 +187,9 @@ static const cc_string curlAlt = String_FromConst("libcurl.so");
 #elif defined CC_BUILD_SERENITY
 static const cc_string curlLib = String_FromConst("/usr/local/lib/libcurl.so");
 static const cc_string curlAlt = String_FromConst("/usr/local/lib/libcurl.so");
+#elif defined CC_BUILD_OS2
+static const cc_string curlLib = String_FromConst("/@unixroot/usr/lib/curl4.dll");
+static const cc_string curlAlt = String_FromConst("/@unixroot/usr/local/lib/curl4.dll");
 #else
 static const cc_string curlLib = String_FromConst("libcurl.so.4");
 static const cc_string curlAlt = String_FromConst("libcurl.so.3");
@@ -264,10 +197,17 @@ static const cc_string curlAlt = String_FromConst("libcurl.so.3");
 
 static cc_bool LoadCurlFuncs(void) {
 	static const struct DynamicLibSym funcs[] = {
+#if !defined CC_BUILD_OS2
 		DynamicLib_Sym(curl_global_init),    DynamicLib_Sym(curl_global_cleanup),
 		DynamicLib_Sym(curl_easy_init),      DynamicLib_Sym(curl_easy_perform),
 		DynamicLib_Sym(curl_easy_setopt),    DynamicLib_Sym(curl_easy_cleanup),
 		DynamicLib_Sym(curl_slist_free_all), DynamicLib_Sym(curl_slist_append)
+#else
+		DynamicLib_SymC(curl_global_init),    DynamicLib_SymC(curl_global_cleanup),
+		DynamicLib_SymC(curl_easy_init),      DynamicLib_SymC(curl_easy_perform),
+		DynamicLib_SymC(curl_easy_setopt),    DynamicLib_SymC(curl_easy_cleanup),
+		DynamicLib_SymC(curl_slist_free_all), DynamicLib_SymC(curl_slist_append)
+#endif
 	};
 	cc_bool success;
 	void* lib;
@@ -303,7 +243,6 @@ static void HttpBackend_Init(void) {
 	if (!LoadCurlFuncs()) { Logger_WarnFunc(&msg); return; }
 	res = _curl_global_init(CURL_GLOBAL_DEFAULT);
 	if (res) { Logger_SimpleWarn(res, "initing curl"); return; }
-
 	curl = _curl_easy_init();
 	if (!curl) { Logger_SimpleWarn(res, "initing curl_easy"); return; }
 
@@ -399,10 +338,10 @@ static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
 	/* TODO stackalloc instead and then copy to dynamic array later? */
 	/*  probably not worth the extra complexity though */
 
-	req->_capacity   = 0;
-	http_curProgress = HTTP_PROGRESS_FETCHING_DATA;
+	req->_capacity = 0;
+	req->progress  = HTTP_PROGRESS_FETCHING_DATA;
 	res = _curl_easy_perform(curl);
-	http_curProgress = 100;
+	req->progress  = 100;
 
 	/* Free error string if it isn't needed */
 	if (req->error && !req->error[0]) {
@@ -416,72 +355,24 @@ static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
 	_curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, NULL);
 	return res;
 }
-#elif defined CC_BUILD_WININET
-/*########################################################################################################################*
-*-----------------------------------------------------WinINet backend-----------------------------------------------------*
-*#########################################################################################################################*/
-#define WIN32_LEAN_AND_MEAN
-#define NOSERVICE
-#define NOMCX
-#define NOIME
-#ifndef UNICODE
-#define UNICODE
-#define _UNICODE
-#endif
-#include <windows.h>
+#elif defined CC_BUILD_HTTPCLIENT
 #include "Errors.h"
+#include "PackedCol.h"
+#include "SSL.h"
 
-/* === BEGIN wininet.h === */
-#define INETAPI DECLSPEC_IMPORT
-typedef PVOID HINTERNET;
-typedef WORD INTERNET_PORT;
-
-#define INTERNET_OPEN_TYPE_PRECONFIG  0   // use registry configuration
-#define INTERNET_OPEN_TYPE_DIRECT     1   // direct to net
-#define INTERNET_SERVICE_HTTP         3
-
-#define HTTP_ADDREQ_FLAG_ADD         0x20000000
-#define HTTP_ADDREQ_FLAG_REPLACE     0x80000000
-
-#define INTERNET_FLAG_RELOAD         0x80000000
-#define INTERNET_FLAG_NO_CACHE_WRITE 0x04000000
-#define INTERNET_FLAG_SECURE         0x00800000
-#define INTERNET_FLAG_NO_COOKIES     0x00080000
-#define INTERNET_FLAG_NO_UI          0x00000200
-
-#define SECURITY_FLAG_IGNORE_REVOCATION      0x00000080
-#define SECURITY_FLAG_IGNORE_UNKNOWN_CA      0x00000100
-#define SECURITY_FLAG_IGNORE_CERT_CN_INVALID 0x00001000
-#define HTTP_QUERY_RAW_HEADERS          21
-#define INTERNET_OPTION_SECURITY_FLAGS  31
-
-static BOOL      (WINAPI *_InternetCloseHandle)(HINTERNET hInternet);
-static HINTERNET (WINAPI *_InternetConnectA)(HINTERNET hInternet, PCSTR serverName, INTERNET_PORT serverPort, PCSTR userName, PCSTR password, DWORD service, DWORD flags, DWORD_PTR context);
-static HINTERNET (WINAPI *_InternetOpenA)(PCSTR agent, DWORD accessType, PCSTR lpszProxy, PCSTR proxyBypass, DWORD flags);
-static BOOL      (WINAPI *_InternetQueryOptionA)(HINTERNET hInternet, DWORD option, PVOID buffer, DWORD* bufferLength);
-static BOOL      (WINAPI *_InternetSetOptionA)(HINTERNET hInternet, DWORD option, PVOID buffer, DWORD bufferLength);
-static BOOL      (WINAPI *_InternetQueryDataAvailable)(HINTERNET hFile, DWORD* numBytesAvailable, DWORD flags, DWORD_PTR context);
-static BOOL      (WINAPI *_InternetReadFile)(HINTERNET hFile, PVOID buffer, DWORD numBytesToRead, DWORD* numBytesRead);
-static BOOL      (WINAPI *_HttpQueryInfoA)(HINTERNET hRequest, DWORD infoLevel, PVOID buffer, DWORD* bufferLength, DWORD* index);
-static BOOL      (WINAPI *_HttpAddRequestHeadersA)(HINTERNET hRequest, PCSTR headers, DWORD headersLength, DWORD modifiers);
-static HINTERNET (WINAPI *_HttpOpenRequestA)(HINTERNET hConnect, PCSTR verb, PCSTR objectName, PCSTR version, PCSTR referrer, PCSTR* acceptTypes, DWORD flags, DWORD_PTR context);
-static BOOL      (WINAPI *_HttpSendRequestA)(HINTERNET hRequest, PCSTR headers, DWORD headersLength, PVOID optional, DWORD optionalLength);
-/* === END wininet.h === */
-
-/* caches connections to web servers */
-struct HttpCacheEntry {
-	HINTERNET Handle;  /* Native connection handle. */
-	cc_string Address; /* Address of server. (e.g. "classicube.net") */
-	cc_uint16 Port;    /* Port server is listening on. (e.g 80) */
-	cc_bool Https;     /* Whether HTTPS or just HTTP protocol. */
-	char _addressBuffer[STRING_SIZE + 1];
+/*########################################################################################################################*
+*---------------------------------------------------------HttpUrl---------------------------------------------------------*
+*#########################################################################################################################*/
+/* Components of a URL */
+struct HttpUrl {
+	cc_bool https;      /* Whether HTTPS or just HTTP protocol */
+	cc_string address;  /* Address of server (e.g. "classicube.net:8080") */
+	cc_string resource; /* Path being accessed (and query string) */
+	char _addressBuffer[STRING_SIZE + 8];
+	char _resourceBuffer[STRING_SIZE * 4];
 };
-#define HTTP_CACHE_ENTRIES 10
-static struct HttpCacheEntry http_cache[HTTP_CACHE_ENTRIES];
-static HINTERNET hInternet;
 
-/* Converts characters to UTF8, then calls Http_URlEncode on them. */
-static void HttpCache_UrlEncodeUrl(cc_string* dst, const cc_string* src) {
+static void HttpUrl_EncodeUrl(cc_string* dst, const cc_string* src) {
 	cc_uint8 data[4];
 	int i, len;
 	char c;
@@ -500,195 +391,565 @@ static void HttpCache_UrlEncodeUrl(cc_string* dst, const cc_string* src) {
 }
 
 /* Splits up the components of a URL */
-static void HttpCache_MakeEntry(const cc_string* url, struct HttpCacheEntry* entry, cc_string* resource) {
-	cc_string scheme, path, addr, name, port, _resource;
-	/* URL is of form [scheme]://[server name]:[server port]/[resource] */
-	int idx = String_IndexOfConst(url, "://");
+static void HttpUrl_Parse(const cc_string* src, struct HttpUrl* url) {
+	cc_string scheme, path, addr, resource;
+	/* URL is of form [scheme]://[server host]:[server port]/[resource] */
+	/* For simplicity, parsed as [scheme]://[server address]/[resource] */
+	int idx = String_IndexOfConst(src, "://");
 
-	scheme = idx == -1 ? String_Empty : String_UNSAFE_Substring(url,   0, idx);
-	path   = idx == -1 ? *url         : String_UNSAFE_SubstringAt(url, idx + 3);
-	entry->Https = String_CaselessEqualsConst(&scheme, "https");
+	scheme = idx == -1 ? String_Empty : String_UNSAFE_Substring(src,   0, idx);
+	path   = idx == -1 ? *src         : String_UNSAFE_SubstringAt(src, idx + 3);
 
-	String_UNSAFE_Separate(&path, '/', &addr, &_resource);
-	String_UNSAFE_Separate(&addr, ':', &name, &port);
+	url->https = String_CaselessEqualsConst(&scheme, "https");
+	String_UNSAFE_Separate(&path, '/', &addr, &resource);
 
-	String_Append(resource, '/');
+	String_InitArray(url->address, url->_addressBuffer);
+	String_Copy(&url->address, &addr);
+
+	String_InitArray(url->resource, url->_resourceBuffer);
+	String_Append(&url->resource, '/');
 	/* Address may have unicode characters - need to percent encode them */
-	HttpCache_UrlEncodeUrl(resource, &_resource);
+	HttpUrl_EncodeUrl(&url->resource, &resource);
+}
 
-	String_InitArray_NT(entry->Address, entry->_addressBuffer);
-	String_Copy(&entry->Address, &name);
-	entry->Address.buffer[entry->Address.length] = '\0';
+static cc_result HttpUrl_ResolveRedirect(struct HttpUrl* parts, const cc_string* url) {
+	/* absolute URL */
+	if (String_IndexOfConst(url, "http://") == 0 || String_IndexOfConst(url, "https://") == 0) {		
+		HttpUrl_Parse(url, parts);
+		return 0;
+	} 
 
-	if (!Convert_ParseUInt16(&port, &entry->Port)) {
-		entry->Port = entry->Https ? 443 : 80;
+	/* Root relative URL */
+	if (url->buffer[0] == '/' && (url->length == 1 || url->buffer[1] != '/')) {
+		parts->resource.length = 0;
+		HttpUrl_EncodeUrl(&parts->resource, url);
+		return 0;
+	}
+
+	/* TODO scheme relative or relative URL or invalid */
+	return HTTP_ERR_RELATIVE;
+}
+
+
+/*########################################################################################################################*
+*------------------------------------------------------HttpConnection-----------------------------------------------------*
+*#########################################################################################################################*/
+struct HttpConnection {
+	cc_socket socket;
+	void* sslCtx;
+	cc_bool valid;
+};
+
+static void HttpConnection_Close(struct HttpConnection* conn) {
+	if (conn->sslCtx) {
+		SSL_Free(conn->sslCtx);
+		conn->sslCtx = NULL;
+	}
+
+	if (conn->socket != -1) {
+		Socket_Close(conn->socket);
+		conn->socket = -1;
+	}
+	conn->valid = false;
+}
+
+static void ExtractHostPort(const struct HttpUrl* url, cc_string* host, cc_string* port) {
+	/* address can have the form of either "host" or "host:port" */
+	/* Slightly more complicated because IPv6 hosts can be e.g. [::1] */
+	const cc_string* addr = &url->address;
+	int idx = String_LastIndexOf(addr, ':');
+
+	if (idx == -1) {
+		*host = *addr;
+		*port = String_Empty;
+	} else {
+		*host = String_UNSAFE_Substring(addr, 0, idx);
+		*port = String_UNSAFE_SubstringAt(addr, idx + 1);
 	}
 }
 
-/* Inserts entry into the cache at the given index */
-static cc_result HttpCache_Insert(int i, struct HttpCacheEntry* e) {
-	HINTERNET conn;
-	conn = _InternetConnectA(hInternet, e->Address.buffer, e->Port, NULL, NULL, 
-				INTERNET_SERVICE_HTTP, e->Https ? INTERNET_FLAG_SECURE : 0, 0);
-	if (!conn) return GetLastError();
+static cc_result HttpConnection_Open(struct HttpConnection* conn, const struct HttpUrl* url) {
+	cc_string host, port;
+	cc_uint16 portNum;
+	cc_result res;
+	cc_sockaddr addrs[SOCKET_MAX_ADDRS];
+	int i, numValidAddrs;
 
-	e->Handle     = conn;
-	http_cache[i] = *e;
+	ExtractHostPort(url, &host, &port);
+	if (!Convert_ParseUInt16(&port, &portNum)) {
+		portNum = url->https ? 443 : 80;
+	}
 
-	/* otherwise address buffer points to stack buffer */
-	http_cache[i].Address.buffer = http_cache[i]._addressBuffer;
-	return 0;
+	conn->socket = -1;
+	conn->sslCtx = NULL;
+
+	if ((res = Socket_ParseAddress(&host, portNum, addrs, &numValidAddrs))) return res;
+	res = ERR_INVALID_ARGUMENT; /* in case 0 valid addresses */
+
+	/* TODO: Connect in parallel instead of serial, but that's a lot of work */
+	for (i = 0; i < numValidAddrs; i++)
+	{
+		res = Socket_Create(&conn->socket, &addrs[i], false);
+		if (res) { HttpConnection_Close(conn); continue; }
+
+		res = Socket_Connect(conn->socket, &addrs[i]);
+		if (res) { HttpConnection_Close(conn); continue; }
+
+		break; /* Successful connection */
+	}
+	if (res) return res;
+
+	conn->valid = true;
+	if (!url->https) return 0;
+	return SSL_Init(conn->socket, &host, &conn->sslCtx);
 }
 
-/* Finds or inserts the given entry into the cache */
-static cc_result HttpCache_Lookup(struct HttpCacheEntry* e) {
-	struct HttpCacheEntry* c;
+static cc_result HttpConnection_Read(struct HttpConnection* conn, cc_uint8* data, cc_uint32 count, cc_uint32* read) {
+	if (conn->sslCtx)
+		return SSL_Read(conn->sslCtx, data, count, read);
+
+	return Socket_Read(conn->socket,  data, count, read);
+}
+
+static cc_result HttpConnection_Write(struct HttpConnection* conn, const cc_uint8* data, cc_uint32 count) {
+	if (conn->sslCtx) 
+		return SSL_WriteAll(conn->sslCtx, data, count);
+
+	return Socket_WriteAll(conn->socket,  data, count);
+}
+
+
+/*########################################################################################################################*
+*-----------------------------------------------------Connection Pool-----------------------------------------------------*
+*#########################################################################################################################*/
+static struct ConnectionPoolEntry {
+	struct HttpConnection conn;
+	cc_string addr;
+	char addrBuffer[STRING_SIZE];
+	cc_bool https;
+} connection_pool[10];
+
+static cc_result ConnectionPool_Insert(int i, struct HttpConnection** conn, const struct HttpUrl* url) {
+	struct ConnectionPoolEntry* e = &connection_pool[i];
+	*conn = &e->conn;
+
+	String_InitArray(e->addr, e->addrBuffer);
+	String_Copy(&e->addr, &url->address);
+	e->https = url->https;
+	return HttpConnection_Open(&e->conn, url);
+}
+
+static cc_result ConnectionPool_Open(struct HttpConnection** conn, const struct HttpUrl* url) {
+	struct ConnectionPoolEntry* e;
 	int i;
 
-	for (i = 0; i < HTTP_CACHE_ENTRIES; i++) {
-		c = &http_cache[i];
-		if (c->Https == e->Https && String_Equals(&c->Address, &e->Address) && c->Port == e->Port) {
-			e->Handle = c->Handle;
+	for (i = 0; i < Array_Elems(connection_pool); i++)
+	{
+		e = &connection_pool[i];
+		if (e->conn.valid && e->https == url->https && String_Equals(&e->addr, &url->address)) {
+			*conn = &connection_pool[i].conn;
 			return 0;
 		}
 	}
 
-	for (i = 0; i < HTTP_CACHE_ENTRIES; i++) {
-		if (http_cache[i].Handle) continue;
-		return HttpCache_Insert(i, e);
+	for (i = 0; i < Array_Elems(connection_pool); i++)
+	{
+		e = &connection_pool[i];
+		if (!e->conn.valid) return ConnectionPool_Insert(i, conn, url);
 	}
 
 	/* TODO: Should we be consistent in which entry gets evicted? */
-	i = (cc_uint8)Stopwatch_Measure() % HTTP_CACHE_ENTRIES;
-	_InternetCloseHandle(http_cache[i].Handle);
-	return HttpCache_Insert(i, e);
+	i = (cc_uint8)Stopwatch_Measure() % Array_Elems(connection_pool);
+	HttpConnection_Close(&connection_pool[i].conn);
+	return ConnectionPool_Insert(i, conn, url);
 }
 
-static void* wininet_lib;
-static cc_bool HttpBackend_DescribeError(cc_result res, cc_string* dst) {
-	return Platform_DescribeErrorExt(res, dst, wininet_lib);
+
+/*########################################################################################################################*
+*--------------------------------------------------------HttpClient-------------------------------------------------------*
+*#########################################################################################################################*/
+enum HTTP_RESPONSE_STATE {
+	HTTP_RESPONSE_STATE_INITIAL,
+	HTTP_RESPONSE_STATE_HEADER,
+	HTTP_RESPONSE_STATE_DATA,
+	HTTP_RESPONSE_STATE_CHUNK_HEADER,
+	HTTP_RESPONSE_STATE_CHUNK_END_R,
+	HTTP_RESPONSE_STATE_CHUNK_END_N,
+	HTTP_RESPONSE_STATE_CHUNK_TRAILERS,
+	HTTP_RESPONSE_STATE_DONE
+};
+#define HTTP_HEADER_MAX_LENGTH   4096
+#define HTTP_LOCATION_MAX_LENGTH 256
+
+struct HttpClientState {
+	enum HTTP_RESPONSE_STATE state;
+	struct HttpConnection* conn;
+	struct HttpRequest* req;
+	cc_uint32 dataLeft; /* Number of bytes still to read from the current chunk or body */
+	int chunked;
+	cc_bool autoClose;
+	cc_string header, location;
+	struct HttpUrl url;
+	char _headerBuffer[HTTP_HEADER_MAX_LENGTH];
+	char _locationBuffer[HTTP_LOCATION_MAX_LENGTH];
+};
+
+static void HttpClientState_Reset(struct HttpClientState* state) {
+	state->state       = HTTP_RESPONSE_STATE_INITIAL;
+	state->chunked     = 0;
+	state->dataLeft    = 0;
+	state->autoClose   = false;
+	String_InitArray(state->header,   state->_headerBuffer);
+	String_InitArray(state->location, state->_locationBuffer);
 }
 
+static void HttpClientState_Init(struct HttpClientState* state) {
+	HttpClientState_Reset(state);
+}
+
+
+static void HttpClient_Serialise(struct HttpClientState* state) {
+	static const char* verbs[] = { "GET", "HEAD", "POST" };
+
+	struct HttpRequest* req = state->req;
+	cc_string* buffer = (cc_string*)req->meta;
+	/* TODO move to other functions */
+	/* Write request message headers */
+	String_Format2(buffer, "%c %s HTTP/1.1\r\n",
+					verbs[req->requestType], &state->url.resource);
+
+	Http_AddHeader(req, "Host",       &state->url.address);
+	Http_AddHeader(req, "User-Agent", Http_GetUserAgent_UNSAFE());
+	if (req->data) String_Format1(buffer, "Content-Length: %i\r\n", &req->size);
+
+	Http_SetRequestHeaders(req);
+	String_AppendConst(buffer, "\r\n");
+	
+	/* Write request message body */
+	if (req->data) {
+		String_AppendAll(buffer, req->data, req->size);
+		HttpRequest_Free(req);
+	} /* TODO post redirect handling */
+}
+
+static cc_result HttpClient_SendRequest(struct HttpClientState* state) {
+	char inputBuffer[16384];
+	cc_string inputMsg;
+
+	String_InitArray(inputMsg, inputBuffer);
+	state->req->meta     = &inputMsg;
+	state->req->progress = HTTP_PROGRESS_FETCHING_DATA;
+	HttpClient_Serialise(state);
+
+	return HttpConnection_Write(state->conn, (cc_uint8*)inputBuffer, inputMsg.length);
+}
+
+
+static void HttpClient_ParseHeader(struct HttpClientState* state, const cc_string* line) {
+	static const cc_string HTTP_10_VERSION = String_FromConst("HTTP/1.0");
+	cc_string name, value;
+	/* HTTP 1.0 defaults to auto closing connection */
+	if (String_CaselessStarts(line, &HTTP_10_VERSION)) state->autoClose = true;
+
+	/* name: value */
+	if (!String_UNSAFE_Separate(line, ':', &name, &value)) return;
+
+	if (String_CaselessEqualsConst(&name, "Transfer-Encoding")) {
+		state->chunked = String_CaselessEqualsConst(&value, "chunked");
+	} else if (String_CaselessEqualsConst(&name, "Location")) {
+		String_Copy(&state->location, &value);
+	} else if (String_CaselessEqualsConst(&name, "Connection")) {
+		if (String_CaselessEqualsConst(&value, "keep-alive")) state->autoClose = false;
+		if (String_CaselessEqualsConst(&value, "close"))      state->autoClose = true;
+	}
+}
+
+/* RFC 7230, section 3.3.3 - Message Body Length */
+static cc_bool HttpClient_HasBody(struct HttpRequest* req) {
+	/* HEAD responses never have a message body */
+	if (req->requestType == REQUEST_TYPE_HEAD) return false;
+	/* 1XX (Information) responses don't have message body */
+	if (req->statusCode >= 100 && req->statusCode <= 199) return false;
+	/* 204 (No Content) and 304 (Not Modified) also don't */
+	if (req->statusCode == 204 || req->statusCode == 304) return false;
+
+	return true;
+}
+
+static int HttpClient_BeginBody(struct HttpRequest* req, struct HttpClientState* state) {
+	if (!HttpClient_HasBody(req))
+		return HTTP_RESPONSE_STATE_DONE;
+	
+	if (state->chunked) {
+		Http_BufferInit(req);
+		return HTTP_RESPONSE_STATE_CHUNK_HEADER;
+	}
+	if (req->contentLength) {
+		Http_BufferInit(req);
+		return HTTP_RESPONSE_STATE_DATA;
+	}
+	/* Zero length response */
+	return HTTP_RESPONSE_STATE_DONE;
+}
+
+/* RFC 7230, section 4.1 - Chunked Transfer Coding */
+static int HttpClient_GetChunkLength(const cc_string* line) {
+	int length = 0, i, part;
+
+	for (i = 0; i < line->length; i++) 
+	{
+		char c = line->buffer[i];
+		/* RFC 7230, section 4.1.1 - Chunk Extensions */
+		if (c == ';') break;
+
+		part = PackedCol_DeHex(c);
+		if (part == -1) return -1;
+		length = (length << 4) | part;
+	}
+	return length;
+}
+
+/* https://httpwg.org/specs/rfc7230.html */
+static cc_result HttpClient_Process(struct HttpClientState* state, char* buffer, int total) {
+	struct HttpRequest* req = state->req;
+	cc_uint32 left, avail, read;
+	int offset = 0, chunkLen;
+
+	while (offset < total) {
+		switch (state->state) {
+		case HTTP_RESPONSE_STATE_INITIAL:
+			state->state = HTTP_RESPONSE_STATE_HEADER;
+			break;
+
+		case HTTP_RESPONSE_STATE_HEADER:
+		{
+			for (; offset < total;) 
+			{
+				char c = buffer[offset++];
+				if (c == '\r') continue;
+				if (c != '\n') {
+					/* Warn when a header would be truncated */
+					if (state->header.length == HTTP_HEADER_MAX_LENGTH) 
+						return HTTP_ERR_TRUNCATED;
+
+					String_Append(&state->header, c); 
+					continue; 
+				}
+
+				/* Zero length header = end of message headers */
+				if (state->header.length == 0) {
+					state->state = HttpClient_BeginBody(req, state);
+
+					/* The rest of the request body is just content/data */
+					if (state->state == HTTP_RESPONSE_STATE_DATA) {
+						Http_BufferEnsure(req, req->contentLength);
+						state->dataLeft = req->contentLength;
+					}
+					break;
+				}
+
+				Http_ParseHeader(state->req, &state->header);
+				HttpClient_ParseHeader(state, &state->header);
+				state->header.length = 0;
+			}
+		}
+		break;
+
+		case HTTP_RESPONSE_STATE_DATA:
+		{
+			left  = total - offset;
+			avail = state->dataLeft;
+			read  = min(left, avail);
+
+			Mem_Copy(req->data + req->size, buffer + offset, read);
+			Http_BufferExpanded(req, read); state->dataLeft -= read;
+			offset += read;
+
+			if (!state->dataLeft) {
+				state->state = state->chunked ? HTTP_RESPONSE_STATE_CHUNK_END_R : HTTP_RESPONSE_STATE_DONE;
+			}
+		}
+		break;
+
+
+		/* RFC 7230, section 4.1 - Chunked Transfer Coding */
+		case HTTP_RESPONSE_STATE_CHUNK_HEADER:
+		{
+			for (; offset < total;) 
+			{
+				char c = buffer[offset++];
+				if (c == '\r') continue;
+				if (c != '\n') { String_Append(&state->header, c); continue; }
+
+				chunkLen = HttpClient_GetChunkLength(&state->header);
+				if (chunkLen < 0) return HTTP_ERR_CHUNK_SIZE;
+				state->header.length = 0;
+
+				if (chunkLen == 0) {
+					state->state = HTTP_RESPONSE_STATE_CHUNK_TRAILERS;
+				} else {
+					state->state = HTTP_RESPONSE_STATE_DATA;
+					Http_BufferEnsure(req, chunkLen);
+					state->dataLeft = chunkLen;
+				}
+				break;
+			}
+		}
+		break;
+
+		/* Chunks are terminated by \r\n */
+		case HTTP_RESPONSE_STATE_CHUNK_END_R:
+			if (buffer[offset++] != '\r') return ERR_INVALID_ARGUMENT;
+
+			state->state = HTTP_RESPONSE_STATE_CHUNK_END_N;
+			break;
+
+		case HTTP_RESPONSE_STATE_CHUNK_END_N:
+			if (buffer[offset++] != '\n') return ERR_INVALID_ARGUMENT;
+
+			state->state = HTTP_RESPONSE_STATE_CHUNK_HEADER;
+			break;
+
+		/* RFC 7230, section 4.1.2 - Chunked Trailer Part */
+		case HTTP_RESPONSE_STATE_CHUNK_TRAILERS:
+		{
+			for (; offset < total;) 
+			{
+				char c = buffer[offset++];
+				if (c == '\r') continue;
+				if (c != '\n') { String_Append(&state->header, c); continue; }
+
+				/* Zero length header = end of message trailers */
+				if (state->header.length == 0) {
+					state->state = HTTP_RESPONSE_STATE_DONE;
+					break;
+				}
+				state->header.length = 0;
+			}
+		} 
+		break;
+
+		default:
+			return 0;
+		}
+	}
+	return 0;
+}
+
+#define INPUT_BUFFER_LEN 8192
+static cc_result HttpClient_ParseResponse(struct HttpClientState* state) {
+	struct HttpRequest* req = state->req;
+	cc_uint8 buffer[INPUT_BUFFER_LEN];
+	cc_uint8* dst;
+	cc_uint32 total;
+	cc_result res;
+
+	for (;;) 
+	{
+		dst = state->dataLeft > INPUT_BUFFER_LEN ? (req->data + req->size) : buffer;
+		res = HttpConnection_Read(state->conn, dst, INPUT_BUFFER_LEN, &total);
+		if (res) return res;
+
+		if (total == 0) {
+			Platform_Log1("Http read unexpectedly returned 0 in state %i", &state->state);
+			return state->state == HTTP_RESPONSE_STATE_INITIAL ? HTTP_ERR_NO_RESPONSE : ERR_END_OF_STREAM;
+		}
+
+		if (dst != buffer) {
+			/* When there is more than INPUT_BUFFER_LEN bytes of unread data/content, */
+			/*  there is no need to run the HTTP client state machine - just read directly */
+			/*  into the output buffer to avoid a pointless Mem_Copy call */
+			Http_BufferExpanded(req, total); 
+			state->dataLeft -= total;
+		} else {
+			res = HttpClient_Process(state, (char*)buffer, total);
+		}
+
+		if (res) return res;
+		if (state->state == HTTP_RESPONSE_STATE_DONE) return 0;
+	}
+}
+
+static cc_bool HttpClient_IsRedirect(struct HttpRequest* req) {
+	return req->statusCode >= 300 && req->statusCode <= 399 && req->statusCode != 304;
+}
+
+static cc_result HttpClient_HandleRedirect(struct HttpClientState* state) {
+	cc_result res = HttpUrl_ResolveRedirect(&state->url, &state->location);
+	if (res) return res;
+
+	HttpRequest_Free(state->req);
+	Platform_Log1("  Redirecting to: %s", &state->location);
+	state->req->contentLength = 0; /* TODO */
+	return 0;
+}
+
+
+/*########################################################################################################################*
+*-----------------------------------------------Http backend implementation-----------------------------------------------*
+*#########################################################################################################################*/
 static void HttpBackend_Init(void) {
-	static const struct DynamicLibSym funcs[] = {
-		DynamicLib_Sym(InternetCloseHandle), 
-		DynamicLib_Sym(InternetConnectA),   DynamicLib_Sym(InternetOpenA),       
-		DynamicLib_Sym(InternetSetOptionA), DynamicLib_Sym(InternetQueryOptionA),
-		DynamicLib_Sym(InternetReadFile),   DynamicLib_Sym(InternetQueryDataAvailable),
-		DynamicLib_Sym(HttpOpenRequestA),   DynamicLib_Sym(HttpSendRequestA),   
-		DynamicLib_Sym(HttpQueryInfoA),     DynamicLib_Sym(HttpAddRequestHeadersA)
-
-	};
-	static const cc_string wininet = String_FromConst("wininet.dll");
-	DynamicLib_LoadAll(&wininet, funcs, Array_Elems(funcs), &wininet_lib);
-	if (!wininet_lib) return;
-
-	/* TODO: Should we use INTERNET_OPEN_TYPE_PRECONFIG instead? */
-	hInternet = _InternetOpenA(GAME_APP_NAME, INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
-	if (!hInternet) Logger_Abort2(GetLastError(), "Failed to init WinINet");
+	SSLBackend_Init(httpsVerify);
+	//httpOnly = true; // TODO: insecure
 }
 
 static void Http_AddHeader(struct HttpRequest* req, const char* key, const cc_string* value) {
-	cc_string tmp; char tmpBuffer[1024];
-	String_InitArray(tmp, tmpBuffer);
-
-	String_Format2(&tmp, "%c: %s\r\n", key, value);
-	_HttpAddRequestHeadersA((HINTERNET)req->meta, tmp.buffer, tmp.length, 
-							HTTP_ADDREQ_FLAG_ADD | HTTP_ADDREQ_FLAG_REPLACE);
+	String_Format2((cc_string*)req->meta, "%c:%s\r\n", key, value);
 }
 
-/* Creates and sends a HTTP request */
-static cc_result Http_StartRequest(struct HttpRequest* req, cc_string* url) {
-	static const char* verbs[3] = { "GET", "HEAD", "POST" };
-	struct HttpCacheEntry entry;
-	cc_string path; char pathBuffer[URL_MAX_SIZE + 1];
-	DWORD flags, bufferLen;
-	HINTERNET handle;
+static cc_result HttpBackend_PerformRequest(struct HttpClientState* state) {
 	cc_result res;
 
-	String_InitArray_NT(path, pathBuffer);
-	HttpCache_MakeEntry(url, &entry, &path);
-	pathBuffer[path.length] = '\0';
+	res = ConnectionPool_Open(&state->conn, &state->url);
+	if (res) { HttpConnection_Close(state->conn); return res; }
 
-	if (!wininet_lib) return ERR_NOT_SUPPORTED;
-	if ((res = HttpCache_Lookup(&entry))) return res;
+	res = HttpClient_SendRequest(state);
+	if (res) { HttpConnection_Close(state->conn); return res; }
 
-	flags = INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_UI | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_COOKIES;
-	if (entry.Https) flags |= INTERNET_FLAG_SECURE;
+	res = HttpClient_ParseResponse(state);
+	if (res) HttpConnection_Close(state->conn);
 
-	handle = _HttpOpenRequestA(entry.Handle, verbs[req->requestType], pathBuffer, NULL, NULL, NULL, flags, 0);
-	/* Fallback for Windows 95 which returns ERROR_INVALID_PARAMETER */
-	if (!handle) {
-		flags &= ~INTERNET_FLAG_NO_UI; /* INTERNET_FLAG_NO_UI unsupported on Windows 95 */
-		handle = _HttpOpenRequestA(entry.Handle, verbs[req->requestType], pathBuffer, NULL, NULL, NULL, flags, 0);
-		if (!handle) return GetLastError();
-	}
-	req->meta = handle;
-
-	bufferLen = sizeof(flags);
-	_InternetQueryOptionA(handle, INTERNET_OPTION_SECURITY_FLAGS, (void*)&bufferLen, &flags);
-	/* Users have had issues in the past with revocation servers randomly being offline, */
-	/*  which caused all https:// requests to fail. So just skip revocation check. */
-	flags |= SECURITY_FLAG_IGNORE_REVOCATION;
-
-	if (!httpsVerify) flags |= SECURITY_FLAG_IGNORE_UNKNOWN_CA;
-	_InternetSetOptionA(handle,   INTERNET_OPTION_SECURITY_FLAGS, &flags, sizeof(flags));
-
-	Http_SetRequestHeaders(req);
-	return _HttpSendRequestA(handle, NULL, 0, req->data, req->size) ? 0 : GetLastError();
+	return res;
 }
 
-/* Gets headers from a HTTP response */
-static cc_result Http_ProcessHeaders(struct HttpRequest* req, HINTERNET handle) {
-	cc_string left, line;
-	char buffer[8192];
-	DWORD len = 8192;
-	if (!_HttpQueryInfoA(handle, HTTP_QUERY_RAW_HEADERS, buffer, &len, NULL)) return GetLastError();
+static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* urlStr) {
+	struct HttpClientState state;
+	cc_bool retried = false;
+	int redirects   = 0;
+	cc_result res;
 
-	left = String_Init(buffer, len, len);
-	while (left.length) {
-		String_UNSAFE_SplitBy(&left, '\0', &line);
-		Http_ParseHeader(req, &line);
-	}
-	return 0;
-}
-
-/* Downloads the data/contents of a HTTP response */
-static cc_result Http_DownloadData(struct HttpRequest* req, HINTERNET handle) {
-	DWORD read, avail;
-	Http_BufferInit(req);
+	HttpClientState_Init(&state);
+	HttpUrl_Parse(urlStr, &state.url);
+	state.req = req;
 
 	for (;;) {
-		if (!_InternetQueryDataAvailable(handle, &avail, 0, 0)) return GetLastError();
-		if (!avail) break;
-		Http_BufferEnsure(req, avail);
+		res = HttpBackend_PerformRequest(&state);
+		/* TODO: Can we handle this while preserving the TCP connection */
+		if (res == SSL_ERR_CONTEXT_DEAD && !retried) {
+			Platform_LogConst("Resetting connection due to SSL context being dropped..");
+			res = HttpBackend_PerformRequest(&state);
+			retried = true;
+		}
+		if (res == HTTP_ERR_NO_RESPONSE && !retried) {
+			Platform_LogConst("Resetting connection due to empty response..");
+			res = HttpBackend_PerformRequest(&state);
+			retried = true;
+		}
 
-		if (!_InternetReadFile(handle, &req->data[req->size], avail, &read)) return GetLastError();
-		if (!read) break;
-		Http_BufferExpanded(req, read);
+		if (res || !HttpClient_IsRedirect(req)) break;
+		if (redirects >= 20) return HTTP_ERR_REDIRECTS;
+
+		/* TODO FOLLOW LOCATION PROPERLY */
+		redirects++;
+		res = HttpClient_HandleRedirect(&state);
+		if (res) break;
+		HttpClientState_Reset(&state);
 	}
-
- 	http_curProgress = 100;
-	return 0;
+	return res;
 }
 
-static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
-	HINTERNET handle;
-	cc_result res = Http_StartRequest(req, url);
-	HttpRequest_Free(req);
-	if (res) return res;
-
-	handle = req->meta;
-	http_curProgress = HTTP_PROGRESS_FETCHING_DATA;
-	res = Http_ProcessHeaders(req, handle);
-	if (res) { _InternetCloseHandle(handle); return res; }
-
-	if (req->requestType != REQUEST_TYPE_HEAD) {
-		res = Http_DownloadData(req, handle);
-		if (res) { _InternetCloseHandle(handle); return res; }
-	}
-
-	return _InternetCloseHandle(handle) ? 0 : GetLastError();
+static cc_bool HttpBackend_DescribeError(cc_result res, cc_string* dst) {
+	return SSLBackend_DescribeError(res, dst);
 }
 #elif defined CC_BUILD_ANDROID
 /*########################################################################################################################*
@@ -791,7 +1052,6 @@ static cc_result Http_SetData(JNIEnv* env, struct HttpRequest* req) {
 }
 
 static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
-	static const cc_string userAgent = String_FromConst(GAME_APP_NAME);
 	JNIEnv* env;
 	jint res;
 
@@ -800,13 +1060,13 @@ static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
 	java_req = req;
 
 	Http_SetRequestHeaders(req);
-	Http_AddHeader(req, "User-Agent", &userAgent);
+	Http_AddHeader(req, "User-Agent", Http_GetUserAgent_UNSAFE());
 	if (req->data && (res = Http_SetData(env, req))) return res;
 
-	req->_capacity   = 0;
-	http_curProgress = HTTP_PROGRESS_FETCHING_DATA;
+	req->_capacity = 0;
+	req->progress  = HTTP_PROGRESS_FETCHING_DATA;
 	res = JavaSCall_Int(env, JAVA_httpPerform, NULL);
-	http_curProgress = 100;
+	req->progress  = 100;
 	return res;
 }
 #elif defined CC_BUILD_CFNETWORK
@@ -866,7 +1126,6 @@ static cc_result ParseResponseHeaders(struct HttpRequest* req, CFReadStreamRef s
 }
 
 static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
-    static const cc_string userAgent = String_FromConst(GAME_APP_NAME);
     static CFStringRef verbs[] = { CFSTR("GET"), CFSTR("HEAD"), CFSTR("POST") };
     cc_bool gotHeaders = false;
     char tmp[NATIVE_STR_LEN];
@@ -885,7 +1144,7 @@ static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
     request = CFHTTPMessageCreateRequest(NULL, verbs[req->requestType], urlRef, kCFHTTPVersion1_1);
     req->meta = request;
     Http_SetRequestHeaders(req);
-    Http_AddHeader(req, "User-Agent", &userAgent);
+    Http_AddHeader(req, "User-Agent", Http_GetUserAgent_UNSAFE());
     CFRelease(urlRef);
     
     if (req->data && req->size) {
@@ -928,23 +1187,147 @@ static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
     CFRelease(request);
     return result;
 }
+#elif !defined CC_BUILD_NETWORKING
+/*########################################################################################################################*
+*------------------------------------------------------Null backend-------------------------------------------------------*
+*#########################################################################################################################*/
+#include "Errors.h"
+
+static cc_bool HttpBackend_DescribeError(cc_result res, cc_string* dst) {
+	return false;
+}
+
+static void HttpBackend_Init(void) { }
+
+static void Http_AddHeader(struct HttpRequest* req, const char* key, const cc_string* value) { }
+
+static cc_result HttpBackend_Do(struct HttpRequest* req, cc_string* url) {
+	req->progress = 100;
+	return ERR_NOT_SUPPORTED;
+}
 #endif
 
-static void ClearCurrentRequest(void) {
+
+static void* workerWaitable;
+static void* workerThread;
+
+static void* pendingMutex;
+static struct RequestList pendingReqs;
+
+static void* curRequestMutex;
+static struct HttpRequest http_curRequest;
+
+
+/*########################################################################################################################*
+*----------------------------------------------------Http public api------------------------------------------------------*
+*#########################################################################################################################*/
+cc_bool Http_GetResult(int reqID, struct HttpRequest* item) {
+	int i;
+	Mutex_Lock(processedMutex);
+	{
+		i = RequestList_Find(&processedReqs, reqID);
+		if (i >= 0) HttpRequest_Copy(item, &processedReqs.entries[i]);
+		if (i >= 0) RequestList_RemoveAt(&processedReqs, i);
+	}
+	Mutex_Unlock(processedMutex);
+	return i >= 0;
+}
+
+cc_bool Http_GetCurrent(int* reqID, int* progress) {
 	Mutex_Lock(curRequestMutex);
 	{
-		http_curRequest.id = 0;
-		http_curProgress   = HTTP_PROGRESS_NOT_WORKING_ON;
+		*reqID    = http_curRequest.id;
+		*progress = http_curRequest.progress;
+	}
+	Mutex_Unlock(curRequestMutex);
+	return *reqID != 0;
+}
+
+int Http_CheckProgress(int reqID) {
+	int curReqID, progress;
+	Http_GetCurrent(&curReqID, &progress);
+
+	if (reqID != curReqID) progress = HTTP_PROGRESS_NOT_WORKING_ON;
+	return progress;
+}
+
+void Http_ClearPending(void) {
+	Mutex_Lock(pendingMutex);
+	{
+		RequestList_Free(&pendingReqs);
+	}
+	Mutex_Unlock(pendingMutex);
+}
+
+void Http_TryCancel(int reqID) {
+	Mutex_Lock(pendingMutex);
+	{
+		RequestList_TryFree(&pendingReqs, reqID);
+	}
+	Mutex_Unlock(pendingMutex);
+
+	Mutex_Lock(processedMutex);
+	{
+		RequestList_TryFree(&processedReqs, reqID);
+	}
+	Mutex_Unlock(processedMutex);
+}
+
+
+/*########################################################################################################################*
+*-----------------------------------------------------Http worker---------------------------------------------------------*
+*#########################################################################################################################*/
+/* Sets up state to begin a http request */
+static void PrepareCurrentRequest(struct HttpRequest* req, cc_string* url) {
+	static const char* verbs[] = { "GET", "HEAD", "POST" };
+	Http_GetUrl(req, url);
+	Platform_Log2("Fetching %s (%c)", url, verbs[req->requestType]);
+	/* TODO change to verbs etc */
+
+	Mutex_Lock(curRequestMutex);
+	{
+		HttpRequest_Copy(&http_curRequest, req);
+		http_curRequest.progress = HTTP_PROGRESS_MAKING_REQUEST;
 	}
 	Mutex_Unlock(curRequestMutex);
 }
 
-static void WorkerLoop(void) {
-	char urlBuffer[URL_MAX_SIZE]; cc_string url;
-	struct HttpRequest request;
-	cc_bool hasRequest;
+static void PerformRequest(struct HttpRequest* req, cc_string* url) {
 	cc_uint64 beg, end;
 	int elapsed;
+
+	beg = Stopwatch_Measure();
+	req->result = HttpBackend_Do(req, url);
+	end = Stopwatch_Measure();
+
+	elapsed = Stopwatch_ElapsedMS(beg, end);
+	Platform_Log4("HTTP: result %e (http %i) in %i ms (%i bytes)",
+		&req->result, &req->statusCode, &elapsed, &req->size);
+
+	Http_FinishRequest(req);
+}
+
+static void ClearCurrentRequest(void) {
+	Mutex_Lock(curRequestMutex);
+	{
+		http_curRequest.id       = 0;
+		http_curRequest.progress = HTTP_PROGRESS_NOT_WORKING_ON;
+	}
+	Mutex_Unlock(curRequestMutex);
+}
+
+static void DoRequest(struct HttpRequest* request) {
+	char urlBuffer[URL_MAX_SIZE]; cc_string url;
+
+	String_InitArray(url, urlBuffer);
+	PrepareCurrentRequest(request, &url);
+	PerformRequest(&http_curRequest, &url);
+	ClearCurrentRequest();
+}
+
+static void WorkerLoop(void) {
+	struct HttpRequest request;
+	cc_bool hasRequest;
 
 	for (;;) {
 		hasRequest = false;
@@ -952,55 +1335,56 @@ static void WorkerLoop(void) {
 		Mutex_Lock(pendingMutex);
 		{
 			if (pendingReqs.count) {
-				request    = pendingReqs.entries[0];
+				HttpRequest_Copy(&request, &pendingReqs.entries[0]);
 				hasRequest = true;
 				RequestList_RemoveAt(&pendingReqs, 0);
 			}
 		}
 		Mutex_Unlock(pendingMutex);
 
-		/* Block until another thread submits a request to do */
-		if (!hasRequest) {
-			Platform_LogConst("Going back to sleep...");
+		if (hasRequest) {
+			DoRequest(&request);
+		} else {
+			/* Block until another thread submits a request to do */
+			Platform_LogConst("Download queue empty, going back to sleep...");
 			Waitable_Wait(workerWaitable);
-			continue;
 		}
-
-		String_InitArray(url, urlBuffer);
-		Http_BeginRequest(&request, &url);
-
-		beg = Stopwatch_Measure();
-		request.result = HttpBackend_Do(&request, &url);
-		end = Stopwatch_Measure();
-
-		elapsed = Stopwatch_ElapsedMS(beg, end);
-		Platform_Log4("HTTP: result %i (http %i) in %i ms (%i bytes)",
-					&request.result, &request.statusCode, &elapsed, &request.size);
-
-		Http_FinishRequest(&request);
-		ClearCurrentRequest();
 	}
 }
 
+/* Adds a req to the list of pending requests, waking up worker thread if needed */
+static void HttpBackend_Add(struct HttpRequest* req, cc_uint8 flags) {
+#if defined CC_BUILD_PSP || defined CC_BUILD_NDS
+	/* TODO why doesn't threading work properly on PSP */
+	DoRequest(req);
+#else
+	Mutex_Lock(pendingMutex);
+	{
+		RequestList_Append(&pendingReqs, req, flags);
+	}
+	Mutex_Unlock(pendingMutex);
+	Waitable_Signal(workerWaitable);
+#endif
+}
 
 /*########################################################################################################################*
 *-----------------------------------------------------Http component------------------------------------------------------*
 *#########################################################################################################################*/
 static void Http_Init(void) {
 	Http_InitCommon();
+	http_curRequest.progress = HTTP_PROGRESS_NOT_WORKING_ON;
 	/* Http component gets initialised multiple times on Android */
 	if (workerThread) return;
 
 	HttpBackend_Init();
-	workerWaitable = Waitable_Create();
 	RequestList_Init(&pendingReqs);
 	RequestList_Init(&processedReqs);
 
-	pendingMutex    = Mutex_Create();
-	processedMutex  = Mutex_Create();
-	curRequestMutex = Mutex_Create();
-	workerThread    = Thread_Create(WorkerLoop);
-
-	Thread_Start2(workerThread, WorkerLoop);
+	workerWaitable  = Waitable_Create("HTTP wakeup");
+	pendingMutex    = Mutex_Create("HTTP pending");
+	processedMutex  = Mutex_Create("HTTP processed");
+	curRequestMutex = Mutex_Create("HTTP current");
+	
+	Thread_Run(&workerThread, WorkerLoop, 128 * 1024, "HTTP");
 }
 #endif

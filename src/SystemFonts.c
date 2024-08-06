@@ -32,6 +32,264 @@ struct IGameComponent SystemFonts_Component = {
 
 
 /*########################################################################################################################*
+*------------------------------------------------------Fallback font------------------------------------------------------*
+*#########################################################################################################################*/
+#define FallbackFont_ValidChar(c) ((c) > 32 && (c) < 127)
+#define FallbackFont_ToIndex(c)   ((c) - 33) /* First valid char is ! */
+#define SPACE_WIDTH 2
+#define CELL_SIZE 8
+
+#define FallbackFont_GetRows(c) (FallbackFont_ValidChar(c) ? font_bitmap[FallbackFont_ToIndex(c)] : missing_cell)
+#define FallbackFont_GetScale(size) ((size) >> 3)
+
+static const cc_uint8 missing_cell[CELL_SIZE] = { 
+	0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF 
+};
+
+/* 8x8 font bitmap, represented with 1 bit for each pixel */
+/* Source: Goodly's texture pack for ClassiCube */
+static const cc_uint8 font_bitmap[][CELL_SIZE] = {
+	  { 0x01,0x01,0x01,0x01,0x01,0x00,0x01,0x00 }, /* ! */
+	  { 0x05,0x05,0x05,0x00,0x00,0x00,0x00,0x00 }, /* " */
+	  { 0x0A,0x0A,0x1F,0x0A,0x1F,0x0A,0x0A,0x00 }, /* # */
+	  { 0x04,0x1F,0x01,0x1F,0x10,0x1F,0x04,0x00 }, /* $ */
+	  { 0x00,0x21,0x11,0x08,0x04,0x22,0x21,0x00 }, /* % */
+	  { 0x0C,0x12,0x0C,0x2E,0x19,0x11,0x2E,0x00 }, /* & */
+	  { 0x01,0x01,0x01,0x00,0x00,0x00,0x00,0x00 }, /* ' */
+	  { 0x04,0x02,0x01,0x01,0x01,0x02,0x04,0x00 }, /* ( */
+	  { 0x01,0x02,0x04,0x04,0x04,0x02,0x01,0x00 }, /* ) */
+	  { 0x00,0x02,0x07,0x02,0x05,0x00,0x00,0x00 }, /* * */
+	  { 0x00,0x04,0x04,0x1F,0x04,0x04,0x00,0x00 }, /* + */
+	  { 0x00,0x00,0x00,0x00,0x00,0x02,0x02,0x01 }, /* , */
+	  { 0x00,0x00,0x00,0x1F,0x00,0x00,0x00,0x00 }, /* - */
+	  { 0x00,0x00,0x00,0x00,0x00,0x01,0x01,0x00 }, /* . */
+	  { 0x08,0x08,0x04,0x04,0x02,0x02,0x01,0x00 }, /* / */
+	  { 0x06,0x09,0x0D,0x0B,0x09,0x09,0x06,0x00 }, /* 0 */
+	  { 0x02,0x03,0x02,0x02,0x02,0x02,0x07,0x00 }, /* 1 */
+	  { 0x06,0x09,0x08,0x04,0x02,0x09,0x0F,0x00 }, /* 2 */
+	  { 0x06,0x09,0x08,0x06,0x08,0x09,0x06,0x00 }, /* 3 */
+	  { 0x05,0x05,0x05,0x0F,0x04,0x04,0x04,0x00 }, /* 4 */
+	  { 0x0F,0x01,0x07,0x08,0x08,0x09,0x06,0x00 }, /* 5 */
+	  { 0x06,0x09,0x01,0x07,0x09,0x09,0x06,0x00 }, /* 6 */
+	  { 0x0F,0x08,0x08,0x04,0x04,0x02,0x02,0x00 }, /* 7 */
+	  { 0x06,0x09,0x09,0x06,0x09,0x09,0x06,0x00 }, /* 8 */
+	  { 0x06,0x09,0x09,0x0E,0x08,0x09,0x06,0x00 }, /* 9 */
+	  { 0x00,0x01,0x01,0x00,0x00,0x01,0x01,0x00 }, /* : */
+	  { 0x00,0x02,0x02,0x00,0x00,0x02,0x02,0x01 }, /* ; */
+	  { 0x00,0x04,0x02,0x01,0x02,0x04,0x00,0x00 }, /* < */
+	  { 0x00,0x00,0x1F,0x00,0x00,0x1F,0x00,0x00 }, /* = */
+	  { 0x00,0x01,0x02,0x04,0x02,0x01,0x00,0x00 }, /* > */
+	  { 0x07,0x09,0x08,0x04,0x02,0x00,0x02,0x00 }, /* ? */
+	  { 0x0E,0x11,0x1D,0x1D,0x1D,0x01,0x0E,0x00 }, /* @ */
+	  { 0x06,0x09,0x09,0x0F,0x09,0x09,0x09,0x00 }, /* A */
+	  { 0x07,0x09,0x09,0x07,0x09,0x09,0x07,0x00 }, /* B */
+	  { 0x06,0x09,0x01,0x01,0x01,0x09,0x06,0x00 }, /* C */
+	  { 0x07,0x09,0x09,0x09,0x09,0x09,0x07,0x00 }, /* D */
+	  { 0x0F,0x01,0x01,0x07,0x01,0x01,0x0F,0x00 }, /* E */
+	  { 0x0F,0x01,0x01,0x07,0x01,0x01,0x01,0x00 }, /* F */
+	  { 0x06,0x09,0x01,0x0D,0x09,0x09,0x06,0x00 }, /* G */
+	  { 0x09,0x09,0x09,0x0F,0x09,0x09,0x09,0x00 }, /* H */
+	  { 0x07,0x02,0x02,0x02,0x02,0x02,0x07,0x00 }, /* I */
+	  { 0x08,0x08,0x08,0x08,0x08,0x09,0x07,0x00 }, /* J */
+	  { 0x09,0x09,0x05,0x03,0x05,0x09,0x09,0x00 }, /* K */
+	  { 0x01,0x01,0x01,0x01,0x01,0x01,0x0F,0x00 }, /* L */
+	  { 0x11,0x1B,0x15,0x11,0x11,0x11,0x11,0x00 }, /* M */
+	  { 0x09,0x0B,0x0D,0x09,0x09,0x09,0x09,0x00 }, /* N */
+	  { 0x06,0x09,0x09,0x09,0x09,0x09,0x06,0x00 }, /* O */
+	  { 0x07,0x09,0x09,0x07,0x01,0x01,0x01,0x00 }, /* P */
+	  { 0x06,0x09,0x09,0x09,0x09,0x05,0x0E,0x00 }, /* Q */
+	  { 0x07,0x09,0x09,0x07,0x09,0x09,0x09,0x00 }, /* R */
+	  { 0x06,0x09,0x01,0x06,0x08,0x09,0x06,0x00 }, /* S */
+	  { 0x07,0x02,0x02,0x02,0x02,0x02,0x02,0x00 }, /* T */
+	  { 0x09,0x09,0x09,0x09,0x09,0x09,0x06,0x00 }, /* U */
+	  { 0x11,0x11,0x11,0x11,0x11,0x0A,0x04,0x00 }, /* V */
+	  { 0x11,0x11,0x11,0x11,0x15,0x1B,0x11,0x00 }, /* W */
+	  { 0x11,0x11,0x0A,0x04,0x0A,0x11,0x11,0x00 }, /* X */
+	  { 0x11,0x11,0x0A,0x04,0x04,0x04,0x04,0x00 }, /* Y */
+	  { 0x0F,0x08,0x04,0x02,0x01,0x01,0x0F,0x00 }, /* Z */
+	  { 0x07,0x01,0x01,0x01,0x01,0x01,0x07,0x00 }, /* [ */
+	  { 0x01,0x01,0x02,0x02,0x04,0x04,0x08,0x00 }, /* \ */
+	  { 0x07,0x04,0x04,0x04,0x04,0x04,0x07,0x00 }, /* ] */
+	  { 0x04,0x0A,0x11,0x00,0x00,0x00,0x00,0x00 }, /* ^ */
+	  { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1F }, /* _ */
+	  { 0x01,0x01,0x02,0x00,0x00,0x00,0x00,0x00 }, /* ` */
+	  { 0x00,0x00,0x0E,0x09,0x09,0x0D,0x0B,0x00 }, /* a */
+	  { 0x01,0x01,0x07,0x09,0x09,0x09,0x07,0x00 }, /* b */
+	  { 0x00,0x00,0x06,0x09,0x01,0x09,0x06,0x00 }, /* c */
+	  { 0x08,0x08,0x0E,0x09,0x09,0x09,0x0E,0x00 }, /* d */
+	  { 0x00,0x00,0x06,0x09,0x0F,0x01,0x0E,0x00 }, /* e */
+	  { 0x06,0x01,0x07,0x01,0x01,0x01,0x01,0x00 }, /* f */
+	  { 0x00,0x00,0x0E,0x09,0x09,0x0E,0x08,0x07 }, /* g */
+	  { 0x01,0x01,0x07,0x09,0x09,0x09,0x09,0x00 }, /* h */
+	  { 0x01,0x00,0x01,0x01,0x01,0x01,0x01,0x00 }, /* i */
+	  { 0x08,0x00,0x08,0x08,0x08,0x08,0x09,0x06 }, /* j */
+	  { 0x01,0x01,0x09,0x05,0x03,0x05,0x09,0x00 }, /* k */
+	  { 0x01,0x01,0x01,0x01,0x01,0x01,0x02,0x00 }, /* l */
+	  { 0x00,0x00,0x0B,0x15,0x15,0x11,0x11,0x00 }, /* m */
+	  { 0x00,0x00,0x07,0x09,0x09,0x09,0x09,0x00 }, /* n */
+	  { 0x00,0x00,0x06,0x09,0x09,0x09,0x06,0x00 }, /* o */
+	  { 0x00,0x00,0x07,0x09,0x09,0x07,0x01,0x01 }, /* p */
+	  { 0x00,0x00,0x0E,0x09,0x09,0x0E,0x08,0x08 }, /* q */
+	  { 0x00,0x00,0x05,0x03,0x01,0x01,0x01,0x00 }, /* r */
+	  { 0x00,0x00,0x0E,0x01,0x06,0x08,0x07,0x00 }, /* s */
+	  { 0x02,0x02,0x07,0x02,0x02,0x02,0x02,0x00 }, /* t */
+	  { 0x00,0x00,0x09,0x09,0x09,0x09,0x0E,0x00 }, /* u */
+	  { 0x00,0x00,0x09,0x09,0x09,0x05,0x03,0x00 }, /* v */
+	  { 0x00,0x00,0x11,0x11,0x15,0x15,0x1A,0x00 }, /* w */
+	  { 0x00,0x00,0x05,0x05,0x02,0x05,0x05,0x00 }, /* x */
+	  { 0x00,0x00,0x09,0x09,0x09,0x0E,0x08,0x07 }, /* y */
+	  { 0x00,0x00,0x0F,0x08,0x04,0x02,0x0F,0x00 }, /* z */
+	  { 0x04,0x02,0x02,0x01,0x02,0x02,0x04,0x00 }, /* { */
+	  { 0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01 }, /* | */
+	  { 0x01,0x02,0x02,0x04,0x02,0x02,0x01,0x00 }, /* } */
+	  { 0x00,0x00,0x26,0x19,0x00,0x00,0x00,0x00 }, /* ~ */
+};
+
+static int Fallback_CellWidth(const cc_uint8* rows) {
+	int y, width, widest = 0;
+
+	for (y = 0; y < CELL_SIZE; y++) 
+	{
+		widest = max(widest, rows[y]);
+	}
+	width = Math_ilog2(widest) + 1;
+
+	return width + 1; /* add 1 for padding */
+}
+
+int FallbackFont_TextWidth(const struct DrawTextArgs* args) { 
+	cc_string left = args->text, part;
+	int size  = args->font->size;
+	int scale = FallbackFont_GetScale(size);
+	char colorCode = 'f';
+	int i, width = 0;
+
+	while (Drawer2D_UNSAFE_NextPart(&left, &part, &colorCode))
+	{
+		for (i = 0; i < part.length; i++) 
+		{
+			cc_uint8 c = part.buffer[i];
+			if (c == ' ') {
+				width += SPACE_WIDTH * scale;
+			} else {
+				width += Fallback_CellWidth(FallbackFont_GetRows(c)) * scale;
+			}
+		}
+	}
+
+	width = max(1, width);
+	if (args->useShadow) width += 1 * scale;
+	return width;
+}
+
+static void Fallback_DrawCell(struct Bitmap* bmp, int x, int y, 
+					int scale, const cc_uint8* rows, BitmapCol color) {
+	int xx, srcX, dstX;
+	int yy, srcY, dstY;
+	BitmapCol* dst_row;
+	cc_uint8 src_row;
+
+	for (srcY = 0, dstY = y; srcY < CELL_SIZE; srcY++)
+	{
+		for (yy = 0; yy < scale; yy++, dstY++)
+		{
+			if (dstY < 0 || dstY >= bmp->height) continue;
+	
+			dst_row = Bitmap_GetRow(bmp, dstY);
+			src_row = rows[srcY];
+	
+			for (srcX = 0, dstX = x; srcX < CELL_SIZE; srcX++)
+			{
+				for (xx = 0; xx < scale; xx++, dstX++)
+				{
+					if (dstX < 0 || dstX >= bmp->width) continue;
+		
+					if (src_row & (1 << srcX)) {
+						dst_row[dstX] = color;
+					}
+				}
+			}
+		}
+	}
+}
+
+void FallbackFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int y, cc_bool shadow) {
+	cc_string left = args->text, part;
+	int size  = args->font->size;
+	int scale = FallbackFont_GetScale(size);
+	char colorCode = 'f';
+	const cc_uint8* rows;
+	BitmapCol color;
+	int i;
+
+	if (shadow) { 
+		x += 1 * scale; 
+		y += 1 * scale;
+	}
+
+	/* adjust coords to make drawn text match GDI fonts */
+	y += (args->font->height - size) / 2;
+
+	while (Drawer2D_UNSAFE_NextPart(&left, &part, &colorCode))
+	{
+		color = Drawer2D_GetColor(colorCode);
+		if (shadow) color = GetShadowColor(color);
+	
+		for (i = 0; i < part.length; i++) 
+		{
+			cc_uint8 c = part.buffer[i];
+			if (c == ' ') { x += SPACE_WIDTH * scale; continue; }
+
+			rows = FallbackFont_GetRows(c);
+
+			Fallback_DrawCell(bmp, x, y, scale, rows, color);
+			x += Fallback_CellWidth(rows) * scale;
+		}
+	}
+}
+
+static void Fallback_PlotCell(int x, int scale, const cc_uint8* rows, FallbackFont_Plotter plotter, void* ctx) {
+	int xx, srcX, dstX;
+	int yy, srcY, dstY;
+	cc_uint8 src_row;
+
+	for (srcY = 0; srcY < CELL_SIZE; srcY++)
+	{
+		src_row = rows[srcY];
+
+		for (srcX = 0; srcX < CELL_SIZE; srcX++)
+		{
+			if (!(src_row & (1 << srcX))) continue;			
+			dstX = x + srcX * scale;
+			dstY = 0 + srcY * scale;
+
+			for (yy = 0; yy < scale; yy++)
+				for (xx = 0; xx < scale; xx++)
+			{
+				plotter(dstX + xx, dstY + yy, ctx);
+			}
+		}
+	}
+}
+
+void FallbackFont_Plot(cc_string* str, FallbackFont_Plotter plotter, int scale, void* ctx) {
+	const cc_uint8* rows;
+	int i, x = 0;
+
+	for (i = 0; i < str->length; i++) 
+	{
+		cc_uint8 c = str->buffer[i];
+		if (c == ' ') { x += SPACE_WIDTH * scale; continue; }
+
+		rows = FallbackFont_GetRows(c);
+
+		Fallback_PlotCell(x, scale, rows, plotter, ctx);
+		x += Fallback_CellWidth(rows) * scale;
+	}
+}
+
+
+/*########################################################################################################################*
 *--------------------------------------------------------Freetype---------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_FREETYPE
@@ -39,6 +297,120 @@ struct IGameComponent SystemFonts_Component = {
 #include "freetype/freetype.h"
 #include "freetype/ftmodapi.h"
 #include "freetype/ftglyph.h"
+
+int cc_strncmp(const char* strA, const char* strB, size_t maxCount) {
+	const unsigned char* a = (const unsigned char*)strA;
+	const unsigned char* b = (const unsigned char*)strB;
+	int i;
+
+	for (i = 0; a[i] && i < maxCount; i++)
+	{
+		if (a[i] != b[i]) return a[i] - b[i];
+	}
+	return 0;
+}
+
+int cc_strcmp(const char* strA, const char* strB) {
+	const unsigned char* a = (const unsigned char*)strA;
+	const unsigned char* b = (const unsigned char*)strB;
+	int i;
+
+	for (i = 0; a[i]; i++)
+	{
+		if (a[i] != b[i]) return a[i] - b[i];
+	}
+	return 0;
+}
+
+size_t cc_strlen(const char* a) {
+	int i = 0;
+	while (*a++) i++;
+	return i;
+}
+
+char* cc_strstr(const char* str, const char* substr) {
+	if (!substr[0]) return (char*)str;
+
+	for (; *str; str++) 
+	{
+		/* Definitely not a match */
+		if (*str != substr[0]) continue;
+
+		/* It's a possible match */
+		if (cc_strcmp(str, substr) == 0) return (char*)str;
+	}
+	return NULL;
+}
+
+int cc_memcmp(const void* ptrA, const void* ptrB, size_t num) {
+	const unsigned char* a = (const unsigned char*)ptrA;
+	const unsigned char* b = (const unsigned char*)ptrB;
+
+	for (; num > 0; num--, a++, b++)
+	{
+		if (*a != *b) return *a - *b;
+	}
+	return 0;
+}
+
+void* cc_memchr(const void* ptr, int ch, size_t num) {
+	const char* a = (const char*)ptr;
+
+	for (; num > 0; num--, a++)
+	{
+		if (*a == ch) return (void*)a;
+	}
+	return NULL;
+}
+
+static void swap(void* v1, void* v2, int size) {
+	char buffer[1024]; 
+
+	Mem_Copy(buffer, v1, size); 
+	Mem_Copy(v1,     v2, size); 
+	Mem_Copy(v2, buffer, size); 
+}
+
+// https://www.geeksforgeeks.org/generic-implementation-of-quicksort-algorithm-in-c/
+static void _qsort(void* v, int size, int left, int right,
+					int (*comp)(const void*, const void*)) {
+	void* ptrL;
+	void* ptrM;
+	void* ptrI;
+	void* ptrE; 
+	int i, last, mid;
+
+	if (left >= right) return;
+	mid = (left + right) / 2; 
+
+	ptrL = (char*)v + (left * size); 
+	ptrM = (char*)v + (mid  * size); 
+	swap(ptrL, ptrM, size); 
+	last = left; 
+
+	for (i = left + 1; i <= right; i++) 
+	{
+		ptrI = (char*)v + (i * size); 
+		if ((*comp)(ptrL, ptrI) > 0) { 
+			last++;
+			ptrE = (char*)v + (last * size); 
+			swap(ptrI, ptrE, size); 
+		} 
+	}
+
+	ptrE = (char*)v + (last * size); 
+	swap(ptrL, ptrE, size); 
+	_qsort(v, size, left, last - 1,  comp); 
+	_qsort(v, size, last + 1, right, comp); 
+}
+
+void cc_qsort(void* v, size_t count, size_t size,
+					int (*comp)(const void*, const void*)) {
+	if (!count) return;
+	_qsort(v, 0, count - 1, size, comp);
+}
+
+
 
 static FT_Library ft_lib;
 static struct FT_MemoryRec_ ft_mem;
@@ -53,7 +425,7 @@ struct SysFont {
 	FT_StreamRec stream;
 	cc_uint8 buffer[8192]; /* small buffer to minimise disk I/O */
 	cc_uint16 widths[256]; /* cached width of each character glyph */
-	FT_BitmapGlyph glyphs[256];        /* cached glyphs */
+	FT_BitmapGlyph glyphs[256];	       /* cached glyphs */
 	FT_BitmapGlyph shadow_glyphs[256]; /* cached glyphs (for back layer shadow) */
 #ifdef CC_BUILD_DARWIN
 	char filename[FILENAME_SIZE + 1];
@@ -77,14 +449,16 @@ static void SysFont_Done(struct SysFont* font) {
 
 	/* Close the actual underlying file */
 	struct Stream* source = &font->file;
-	if (!source->Meta.File) return;
+	if (!source->meta.file) return;
 	source->Close(source);
 
-	for (i = 0; i < 256; i++) {
+	for (i = 0; i < 256; i++) 
+	{
 		if (!font->glyphs[i]) continue;
 		FT_Done_Glyph((FT_Glyph)font->glyphs[i]);
 	}
-	for (i = 0; i < 256; i++) {
+	for (i = 0; i < 256; i++) 
+	{
 		if (!font->shadow_glyphs[i]) continue;
 		FT_Done_Glyph((FT_Glyph)font->shadow_glyphs[i]);
 	}
@@ -96,6 +470,7 @@ static void SysFont_Close(FT_Stream stream) {
 }
 
 static cc_result SysFont_Init(const cc_string* path, struct SysFont* font, FT_Open_Args* args) {
+	cc_filepath str;
 	cc_file file;
 	cc_uint32 size;
 	cc_result res;
@@ -103,7 +478,8 @@ static cc_result SysFont_Init(const cc_string* path, struct SysFont* font, FT_Op
 	cc_string filename;
 #endif
 
-	if ((res = File_Open(&file, path))) return res;
+	Platform_EncodePath(&str, path);
+	if ((res = File_Open(&file, &str))) return res;
 	if ((res = File_Length(file, &size))) { File_Close(file); return res; }
 
 	font->stream.base = NULL;
@@ -147,9 +523,9 @@ static void* FT_ReallocWrapper(FT_Memory memory, long cur_size, long new_size, v
 
 #define FONT_CACHE_FILE "fontscache.txt"
 static cc_string font_candidates[] = {
-	String_FromConst(""),                /* replaced with font_default */
-	String_FromConst("Arial"),           /* preferred font on all platforms */
-	String_FromConst("Liberation Sans"), /* ice looking fallbacks for linux */
+	String_FromConst(""),			     /* replaced with font_default */
+	String_FromConst("Arial"),		     /* preferred font on all platforms */
+	String_FromConst("Liberation Sans"), /* Nice looking fallbacks for linux */
 	String_FromConst("Nimbus Sans"),
 	String_FromConst("Bitstream Charter"),
 	String_FromConst("Cantarell"),
@@ -159,10 +535,11 @@ static cc_string font_candidates[] = {
 	String_FromConst("Slate For OnePlus"), /* Android 10, some devices */
 	String_FromConst("Roboto"), /* Android (broken on some Android 10 devices) */
 	String_FromConst("Geneva"), /* for ancient macOS versions */
-	String_FromConst("Droid Sans") /* for old Android versions */
+	String_FromConst("Droid Sans"), /* for old Android versions */
+	String_FromConst("Google Sans") /* Droid Sans is now known as Google Sans on some Android devices (e.g. a Pixel 6) */
 };
 
-static void SysFonts_InitLibrary(void) {
+static void InitFreeTypeLibrary(void) {
 	FT_Error err;
 	if (ft_lib) return;
 
@@ -175,32 +552,34 @@ static void SysFonts_InitLibrary(void) {
 	FT_Add_Default_Modules(ft_lib);
 }
 
-/* Updates fonts list cache with system's list of fonts */
+static cc_bool loadedPlatformFonts;
+/* Updates fonts list cache with platform's list of fonts */
 /* This should be avoided due to overhead potential */
-static void SysFonts_Update(void) {
-	static cc_bool updatedFonts;
-	if (updatedFonts) return;
-	updatedFonts = true;
+static void SysFonts_LoadPlatform(void) {
+	if (loadedPlatformFonts) return;
+	loadedPlatformFonts = true;
 
-	SysFonts_InitLibrary();
+	/* TODO this basically gets called all the time on non-Window platforms */
+	/* Maybe we can cache the default system font to avoid this extra work? */
+	if (font_list.count == 0)
+		Window_ShowDialog("One time load", "Initialising font cache, this can take several seconds.");
+
+	InitFreeTypeLibrary();
 	Platform_LoadSysFonts();
-	if (fonts_changed) EntryList_Save(&font_list, FONT_CACHE_FILE);
+
+	if (fonts_changed) SysFonts_SaveCache();
 }
 
-static void SysFonts_Load(void) {
-	/* Need to keep track of whether font cache has been checked at least once */
-	/* (Otherwise if unable to find any cached fonts and then unable to load any fonts, 
-	/*  font_list.count will always be 0 and the 'Initialising font cache' dialog will 
-	    confusingly get shown over and over until all font_candidates entries are checked) */
-	static cc_bool checkedCache;
-	if (checkedCache) return;
-	checkedCache = true;
+static cc_bool loadedCachedFonts;
+static void SysFonts_LoadCached(void) {
+	if (loadedCachedFonts) return;
+	loadedCachedFonts = true;
 
 	EntryList_UNSAFE_Load(&font_list, FONT_CACHE_FILE);
-	if (font_list.count) return;
-	
-	Window_ShowDialog("One time load", "Initialising font cache, this can take several seconds.");
-	SysFonts_Update();
+}
+
+void SysFonts_SaveCache(void) {
+	EntryList_Save(&font_list, FONT_CACHE_FILE);
 }
 
 
@@ -241,7 +620,7 @@ static void SysFonts_Add(const cc_string* path, FT_Face face, int index, char ty
 	fonts_changed = true;
 }
 
-static int SysFonts_DoRegister(const cc_string* path, int faceIndex) {
+static int SysFonts_DoRegister(const cc_string* path, int faceIndex, SysFont_RegisterCallback callback) {
 	struct SysFont font;
 	FT_Open_Args args;
 	FT_Error err;
@@ -264,11 +643,12 @@ static int SysFonts_DoRegister(const cc_string* path, int faceIndex) {
 		SysFonts_Add(path, font.face, faceIndex, 'R', "Regular");
 	}
 
+	if (callback) callback(path);
 	FT_Done_Face(font.face);
 	return count;
 }
 
-void SysFonts_Register(const cc_string* path) {
+cc_result SysFonts_Register(const cc_string* path, SysFont_RegisterCallback callback) {
 	cc_string entry, name, value;
 	cc_string fontPath, index;
 	int i, count;
@@ -279,14 +659,15 @@ void SysFonts_Register(const cc_string* path) {
 		String_UNSAFE_Separate(&entry, '=', &name, &value);
 
 		String_UNSAFE_Separate(&value, ',', &fontPath, &index);
-		if (String_CaselessEquals(path, &fontPath)) return;
+		if (String_CaselessEquals(path, &fontPath)) return 0;
 	}
 
-	count = SysFonts_DoRegister(path, 0);
+	count = SysFonts_DoRegister(path, 0, callback);
 	/* there may be more than one font in a font file */
 	for (i = 1; i < count; i++) {
-		SysFonts_DoRegister(path, i);
+		SysFonts_DoRegister(path, i, callback);
 	}
+	return 0;
 }
 
 
@@ -299,19 +680,20 @@ static cc_string Font_LookupOf(const cc_string* fontName, const char type) {
 }
 
 static cc_string Font_DoLookup(const cc_string* fontName, int flags) {
-	cc_string path;
-	if (!font_list.count) SysFonts_Load();
-	path = String_Empty;
+	cc_string path = String_Empty;
 
 	if (flags & FONT_FLAGS_BOLD) path = Font_LookupOf(fontName, 'B');
 	return path.length ? path : Font_LookupOf(fontName, 'R');
 }
 
 static cc_string Font_Lookup(const cc_string* fontName, int flags) {
-	cc_string path = Font_DoLookup(fontName, flags);
+	cc_string path;
+	
+	SysFonts_LoadCached();
+	path = Font_DoLookup(fontName, flags);
 	if (path.length) return path;
 
-	SysFonts_Update();
+	SysFonts_LoadPlatform();
 	return Font_DoLookup(fontName, flags);
 }
 
@@ -334,8 +716,8 @@ const cc_string* SysFonts_UNSAFE_GetDefault(void) {
 void SysFonts_GetNames(struct StringsBuffer* buffer) {
 	cc_string entry, name, path;
 	int i;
-	if (!font_list.count) SysFonts_Load();
-	SysFonts_Update();
+	SysFonts_LoadCached();
+	SysFonts_LoadPlatform();
 
 	for (i = 0; i < font_list.count; i++) {
 		StringsBuffer_UNSAFE_GetRaw(&font_list, i, &entry);
@@ -369,7 +751,7 @@ cc_result SysFont_Make(struct FontDesc* desc, const cc_string* fontName, int siz
 	font = (struct SysFont*)Mem_TryAlloc(1, sizeof(struct SysFont));
 	if (!font) return ERR_OUT_OF_MEMORY;
 
-	SysFonts_InitLibrary();
+	InitFreeTypeLibrary();
 	if ((err = SysFont_Init(&path, font, &args))) { Mem_Free(font); return err; }
 	desc->handle = font;
 
@@ -396,6 +778,13 @@ void SysFont_MakeDefault(struct FontDesc* desc, int size, int flags) {
 		if (!font->length) continue;
 		res  = SysFont_Make(desc, &font_candidates[i], size, flags);
 
+		/* Cached system fonts list may be outdated - force update it */
+		if (res == ReturnCode_FileNotFound && !loadedPlatformFonts) {
+			StringsBuffer_Clear(&font_list);
+			SysFonts_LoadPlatform();
+			res = SysFont_Make(desc, &font_candidates[i], size, flags);
+		}
+
 		if (res == ERR_INVALID_ARGUMENT) {
 			/* Fon't doesn't exist in list, skip over it */
 		} else if (res) {
@@ -406,7 +795,9 @@ void SysFont_MakeDefault(struct FontDesc* desc, int size, int flags) {
 			return;
 		}
 	}
-	Logger_Abort2(res, "Failed to init default font");
+
+	Window_ShowDialog("Failed to init default font", "Falling back to built-in font");
+	Font_MakeBitmapped(desc, size, flags);
 }
 
 void SysFont_Free(struct FontDesc* desc) {
@@ -436,7 +827,7 @@ int SysFont_TextWidth(struct DrawTextArgs* args) {
 			res = FT_Load_Char(face, uc, 0);
 
 			if (res) {
-				Platform_Log2("Error %i measuring width of %r", &res, &c);
+				Platform_Log2("Error %e measuring width of %r", &res, &c);
 				charWidth = 0;
 			} else {
 				charWidth = face->glyph->advance.x;		
@@ -466,7 +857,9 @@ static void DrawGrayscaleGlyph(FT_Bitmap* img, struct Bitmap* bmp, int x, int y,
 
 		for (xx = 0; xx < img->width; xx++, src++, dst++) {
 			if ((unsigned)(x + xx) >= (unsigned)bmp->width) continue;
+
 			I = *src; invI = UInt8_MaxValue - I;
+			if (!I) continue;
 
 			/* TODO: Support transparent text */
 			/* dst->A = ((col.A * intensity) >> 8) + ((dst->A * invIntensity) >> 8);*/
@@ -547,7 +940,7 @@ void SysFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int 
 			res = FT_Load_Char(face, uc, FT_LOAD_RENDER);
 
 			if (res) {
-				Platform_Log2("Error %i drawing %r", &res, &text.buffer[i]);
+				Platform_Log2("Error %e drawing %r", &res, &text.buffer[i]);
 				continue;
 			}
 
@@ -575,7 +968,7 @@ void SysFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int 
 		int ul_thick = FT_MulFix(face->underline_thickness, face->size->metrics.y_scale);
 
 		int ulHeight = TEXT_CEIL(ul_thick);
-		int ulY      = height + TEXT_CEIL(ul_pos);
+		int ulY	     = height + TEXT_CEIL(ul_pos);
 		Drawer2D_Fill(bmp, begX, ulY + y, x - begX, ulHeight, color);
 	}
 
@@ -624,7 +1017,11 @@ void SysFont_Free(struct FontDesc* desc) {
 	Mem_Free(desc->handle);
 }
 
-void SysFonts_Register(const cc_string* path) { }
+void SysFonts_SaveCache(void) { }
+cc_result SysFonts_Register(const cc_string* path, SysFont_RegisterCallback callback) {
+	return ERR_NOT_SUPPORTED;
+}
+
 extern void   interop_SetFont(const char* font, int size, int flags);
 extern double interop_TextWidth(const char* text, const int len);
 extern double interop_TextDraw(const char* text, const int len, struct Bitmap* bmp, int x, int y, cc_bool shadow, const char* hex);
@@ -685,43 +1082,53 @@ extern void interop_SysFontFree(void* handle);
 extern int interop_SysTextWidth(struct DrawTextArgs* args);
 extern void interop_SysTextDraw(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int y, cc_bool shadow);
 
-void SysFonts_Register(const cc_string* path) { }
+void SysFonts_SaveCache(void) { }
+cc_result SysFonts_Register(const cc_string* path, SysFont_RegisterCallback callback) {
+	return ERR_NOT_SUPPORTED;
+}
 
 const cc_string* SysFonts_UNSAFE_GetDefault(void) {
-    return &String_Empty;
+	return &String_Empty;
 }
 
 void SysFonts_GetNames(struct StringsBuffer* buffer) {
-    interop_GetFontNames(buffer);
+	interop_GetFontNames(buffer);
 }
 
 cc_result SysFont_Make(struct FontDesc* desc, const cc_string* fontName, int size, int flags) {
-    return interop_SysFontMake(desc, fontName, size, flags);
+	return interop_SysFontMake(desc, fontName, size, flags);
 }
 
 void SysFont_MakeDefault(struct FontDesc* desc, int size, int flags) {
-    interop_SysMakeDefault(desc, size, flags);
+	interop_SysMakeDefault(desc, size, flags);
 }
 
-void Font_Free(struct FontDesc* desc) {
-    interop_SysFontFree(desc->handle);
+void SysFont_Free(struct FontDesc* desc) {
+	interop_SysFontFree(desc->handle);
 }
 
 int SysFont_TextWidth(struct DrawTextArgs* args) {
-    return interop_SysTextWidth(args);
+	return interop_SysTextWidth(args);
 }
 
 void SysFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int y, cc_bool shadow) {
-    interop_SysTextDraw(args, bmp, x, y, shadow);
+	interop_SysTextDraw(args, bmp, x, y, shadow);
 }
-#elif defined CC_BUILD_PSP
-void SysFonts_Register(const cc_string* path) { }
+#else
+void SysFonts_SaveCache(void) { }
+cc_result SysFonts_Register(const cc_string* path, SysFont_RegisterCallback callback) {
+	return ERR_NOT_SUPPORTED;
+}
 
 const cc_string* SysFonts_UNSAFE_GetDefault(void) { return &String_Empty; }
 
 void SysFonts_GetNames(struct StringsBuffer* buffer) { }
 
 cc_result SysFont_Make(struct FontDesc* desc, const cc_string* fontName, int size, int flags) {
+	size *= DisplayInfo.ScaleY;
+	/* Round upwards to nearest 8 */
+	size = (size + 7) & ~0x07;
+
 	desc->size   = size;
 	desc->flags  = flags;
 	desc->height = Drawer2D_AdjHeight(size);
@@ -735,153 +1142,14 @@ void SysFont_MakeDefault(struct FontDesc* desc, int size, int flags) {
 }
 
 void SysFont_Free(struct FontDesc* desc) {
+	desc->handle = NULL;
 }
 
 int SysFont_TextWidth(struct DrawTextArgs* args) {
-	return 10;
+	return FallbackFont_TextWidth(args);
 }
 
 void SysFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int y, cc_bool shadow) {
-}
-#elif defined CC_BUILD_3DS
-#include <3ds.h>
-
-void SysFonts_Register(const cc_string* path) { }
-
-const cc_string* SysFonts_UNSAFE_GetDefault(void) { return &String_Empty; }
-
-void SysFonts_GetNames(struct StringsBuffer* buffer) { }
-
-cc_result SysFont_Make(struct FontDesc* desc, const cc_string* fontName, int size, int flags) {
-	desc->size   = size;
-	desc->flags  = flags;
-	desc->height = Drawer2D_AdjHeight(size);
-	desc->handle = fontGetSystemFont();
-	
-	CFNT_s* font = (CFNT_s*)desc->handle;
-	int fmt = font->finf.tglp->sheetFmt;
-	Platform_Log1("Font GPU format: %i", &fmt);
-	return 0;
-}
-
-void SysFont_MakeDefault(struct FontDesc* desc, int size, int flags) {
-	SysFont_Make(desc, NULL, size, flags);
-}
-
-void SysFont_Free(struct FontDesc* desc) {
-}
-
-int SysFont_TextWidth(struct DrawTextArgs* args) {
-	int width = 0;
-	cc_string left = args->text, part;
-	char colorCode = 'f';
-	CFNT_s* font   = (CFNT_s*)args->font->handle;
-
-	while (Drawer2D_UNSAFE_NextPart(&left, &part, &colorCode))
-	{
-		for (int i = 0; i < part.length; i++) 
-		{
-			cc_unichar cp  = Convert_CP437ToUnicode(part.buffer[i]);
-			int glyphIndex = fontGlyphIndexFromCodePoint(font, cp);
-			if (glyphIndex < 0) continue;
-			
-			charWidthInfo_s* wInfo = fontGetCharWidthInfo(font, glyphIndex);
-			width += wInfo->charWidth;
-		}
-	}
-	return max(1, width);
-}
-
-
-// see Graphics_3DS.c for more details
-static inline cc_uint32 CalcMortonOffset(cc_uint32 x, cc_uint32 y) {
-	// TODO: Simplify to array lookup?
-    	x = (x | (x << 2)) & 0x33;
-    	x = (x | (x << 1)) & 0x55;
-
-    	y = (y | (y << 2)) & 0x33;
-    	y = (y | (y << 1)) & 0x55;
-
-    return x | (y << 1);
-}
-
-static void DrawGlyph(CFNT_s* font, struct Bitmap* bmp, int x, int y, int glyphIndex, int CP, BitmapCol color) {
-	TGLP_s* tglp = font->finf.tglp;
-	int fmt = font->finf.tglp->sheetFmt;
-	if (fmt != GPU_A4) return;
-	
-	int glyphsPerSheet = tglp->nRows * tglp->nLines;
-	int sheetIdx = glyphIndex / glyphsPerSheet;
-	int sheetPos = glyphIndex % glyphsPerSheet;
-	u8* sheet    = tglp->sheetData + (sheetIdx * tglp->sheetSize);
-	u8 a, I, invI;
-
-	int rowY = sheetPos / tglp->nRows;
-	int rowX = sheetPos % tglp->nRows;
-	
-	charWidthInfo_s* wInfo = fontGetCharWidthInfo(font, glyphIndex);	
-	//int L = wInfo->left, W = wInfo->glyphWidth;
-	//Platform_Log3("Draw %r (L=%i, W=%i", &CP, &L, &W);
-	
-	// TODO not very efficient.. but it works I guess
-	// Can this be rewritten to use normal Drawer2D's bitmap font rendering somehow?
-	for (int Y = 0; Y < tglp->cellHeight; Y++)
-	{
-		for (int X = 0; X < wInfo->glyphWidth; X++)
-		{
-			int dstX = x + X + wInfo->left, dstY = y + Y;
-			if (dstX < 0 || dstY < 0 || dstX >= bmp->width || dstY >= bmp->height) continue;
-			
-			int srcX = X + rowX * (tglp->cellWidth  + 1);
-			int srcY = Y + rowY * (tglp->cellHeight + 1);
-			
-			int tile_offset   = (srcY & ~0x07) * tglp->sheetWidth + (srcX & ~0x07) * 8;
-			int tile_location = CalcMortonOffset(srcX & 0x07, srcY & 0x07);
-			
-			// each byte stores two pixels in it
-			a = sheet[(tile_offset + tile_location) >> 1];
-			a = (tile_location & 1) ? (a >> 4) : (a & 0x0F);
-			a = a * 0x11; // 0-15 > 0-255
-			
-			I = a; invI = UInt8_MaxValue - a;
-
-			BitmapCol src = Bitmap_GetPixel(bmp, dstX, dstY);
-			Bitmap_GetPixel(bmp, dstX, dstY) = BitmapCol_Make(
-				((BitmapCol_R(color) * I) >> 8) + ((BitmapCol_R(src) * invI) >> 8),
-				((BitmapCol_G(color) * I) >> 8) + ((BitmapCol_G(src) * invI) >> 8),
-				((BitmapCol_B(color) * I) >> 8) + ((BitmapCol_B(src) * invI) >> 8),
-				                           I  + ((BitmapCol_A(src) * invI) >> 8)
-			);
-				
-			/*Bitmap_GetPixel(bmp, dstX, dstY) = BitmapColor_RGB(
-				((BitmapCol_R(color) * a) >> 8),
-				((BitmapCol_G(color) * a) >> 8),
-				((BitmapCol_B(color) * a) >> 8));*/
-		}
-	}
-}
-
-void SysFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x, int y, cc_bool shadow) {
-	cc_string left = args->text, part;
-	char colorCode = 'f';
-	CFNT_s* font   = (CFNT_s*)args->font->handle;
-	BitmapCol color;
-
-	while (Drawer2D_UNSAFE_NextPart(&left, &part, &colorCode))
-	{
-		color = Drawer2D_GetColor(colorCode);
-		if (shadow) color = GetShadowColor(color);
-	
-		for (int i = 0; i < part.length; i++) 
-		{
-			cc_unichar cp  = Convert_CP437ToUnicode(part.buffer[i]);
-			int glyphIndex = fontGlyphIndexFromCodePoint(font, cp);
-			if (glyphIndex < 0) continue;
-			
-			DrawGlyph(font, bmp, x, y, glyphIndex, cp, color);
-			charWidthInfo_s* wInfo = fontGetCharWidthInfo(font, glyphIndex);
-			x += wInfo->charWidth;
-		}
-	}
+	FallbackFont_DrawText(args, bmp, x, y, shadow);
 }
 #endif

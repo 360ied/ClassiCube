@@ -1,13 +1,15 @@
 #ifndef CC_BUILDER_H
 #define CC_BUILDER_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Converts a 16x16x16 chunk into a mesh of vertices
   NormalMeshBuilder:
     Implements a simple chunk mesh builder, where each block face is a single colour
     (whatever lighting engine returns as light colour for given block face at given coordinates)
 
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct ChunkInfo;
 struct IGameComponent;
@@ -21,4 +23,6 @@ extern cc_bool Builder_SmoothLighting;
 void Builder_MakeChunk(struct ChunkInfo* info);
 
 void Builder_ApplyActive(void);
+
+CC_END_HEADER
 #endif

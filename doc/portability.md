@@ -1,11 +1,13 @@
 Although most of the code is platform-independent, some per-platform functionality is required.
 
-By default I try to automatically define appropriate backends for your OS in Core.h. Define ```CC_BUILD_MANUAL``` to disable this.
+By default I try to automatically define appropriate backends for your system in `Core.h`. Define ```CC_BUILD_MANUAL``` to disable this.
 
 ## Before you start
-* IEEE floating support is required.
+* IEEE floating support is required. (Can be emulated in software, but will affect performance)
 * int must be 32-bits. 32-bit addressing (or more) is required.
 * Support for 8/16/32/64 integer types is required. (your compiler must support 64-bit arithmetic)
+* At least around 2 MB of RAM is required at a minimum
+* At least 128 kb for main thread stack size
 
 In other words, the codebase can theroetically be ported to any modern-ish hardware, but not stuff like a UNIVAC machine, the SuperFX chip on the SNES, or an 8-bit microcontroller.
 
@@ -58,7 +60,7 @@ I don't really test these platforms at all, only when I suspect some changes to 
 |Linux ARM | Raspberry pi | ARM64 should work too |
 |Linux SPARC | Debian | Didn't really work due to lack of 24-bit colours |
 |Linux Alpha | Debian | 
-|HaikuOS | Nightly | Requires SDL for windowing
+|HaikuOS | Nightly | 
 
 ## Porting
 
@@ -123,10 +125,11 @@ Define:
 - ```CC_BUILD_GLMODERN``` - Use modern OpenGL shaders
 - ```CC_BUILD_GLES``` - Makes these shaders compatible with OpenGL ES
 
-### Http
+### HTTP
 HTTP, HTTPS, and setting request/getting response headers
 
 Define:
-- ```CC_BUILD_CURL``` - use libcurl for http
+- ```CC_BUILD_HTTPCLIENT``` - use built in simple HTTP backend
+- ```CC_BUILD_CURL``` - use libcurl for HTTP
 
 Supporting connection reuse is highly recommended. (but not required)

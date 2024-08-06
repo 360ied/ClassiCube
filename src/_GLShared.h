@@ -18,22 +18,15 @@
 #define TRANSFER_FORMAT GL_UNSIGNED_BYTE
 #endif
 
+#define uint_to_ptr(raw) ((void*)((cc_uintptr)(raw)))
+#define ptr_to_uint(raw) ((GLuint)((cc_uintptr)(raw)))
+
 
 /*########################################################################################################################*
 *---------------------------------------------------------General---------------------------------------------------------*
 *#########################################################################################################################*/
-static void GLContext_GetAll(const struct DynamicLibSym* syms, int count) {
-	int i;
-	for (i = 0; i < count; i++) {
-		*syms[i].symAddr = GLContext_GetAddress(syms[i].name);
-	}
-}
-
-static void GL_UpdateVsync(void) {
-	GLContext_SetFpsLimit(gfx_vsync, gfx_minFrameMs);
-}
-
 static void GLBackend_Init(void);
+
 void Gfx_Create(void) {
 	GLContext_Create();
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &Gfx.MaxTexWidth);
@@ -44,7 +37,7 @@ void Gfx_Create(void) {
 
 	GLBackend_Init();
 	Gfx_RestoreState();
-	GL_UpdateVsync();
+	GLContext_SetVSync(gfx_vsync);
 }
 
 cc_bool Gfx_TryRestoreContext(void) {
@@ -86,13 +79,13 @@ static void Gfx_DoMipmaps(int x, int y, struct Bitmap* bmp, int rowWidth, cc_boo
 		if (width > 1)  width /= 2;
 		if (height > 1) height /= 2;
 
-		cur = (BitmapCol*)Mem_Alloc(width * height, 4, "mipmaps");
+		cur = (BitmapCol*)Mem_Alloc(width * height, BITMAPCOLOR_SIZE, "mipmaps");
 		GenMipmaps(width, height, cur, prev, rowWidth);
 
 		if (partial) {
-			glTexSubImage2D(GL_TEXTURE_2D, lvl, x, y, width, height, PIXEL_FORMAT, TRANSFER_FORMAT, cur);
+			_glTexSubImage2D(GL_TEXTURE_2D, lvl, x, y, width, height, PIXEL_FORMAT, TRANSFER_FORMAT, cur);
 		} else {
-			glTexImage2D(GL_TEXTURE_2D, lvl, GL_RGBA, width, height, 0, PIXEL_FORMAT, TRANSFER_FORMAT, cur);
+			_glTexImage2D(GL_TEXTURE_2D, lvl, GL_RGBA, width, height, 0, PIXEL_FORMAT, TRANSFER_FORMAT, cur);
 		}
 
 		if (prev != bmp->scan0) Mem_Free(prev);
@@ -102,35 +95,9 @@ static void Gfx_DoMipmaps(int x, int y, struct Bitmap* bmp, int rowWidth, cc_boo
 	if (prev != bmp->scan0) Mem_Free(prev);
 }
 
-GfxResourceID Gfx_CreateTexture(struct Bitmap* bmp, cc_uint8 flags, cc_bool mipmaps) {
-	GLuint texId;
-	glGenTextures(1, &texId);
-	glBindTexture(GL_TEXTURE_2D, texId);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-	if (!Math_IsPowOf2(bmp->width) || !Math_IsPowOf2(bmp->height)) {
-		Logger_Abort("Textures must have power of two dimensions");
-	}
-	if (Gfx.LostContext) return 0;
-
-	if (mipmaps) {
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
-		if (customMipmapsLevels) {
-			int lvls = CalcMipmapsLevels(bmp->width, bmp->height);
-			glTexParameteri(GL_TEXTURE_2D, _GL_TEXTURE_MAX_LEVEL, lvls);
-		}
-	} else {
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	}
-
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bmp->width, bmp->height, 0, PIXEL_FORMAT, TRANSFER_FORMAT, bmp->scan0);
-
-	if (mipmaps) Gfx_DoMipmaps(0, 0, bmp, bmp->width, false);
-	return texId;
-}
-
+/* TODO: Use GL_UNPACK_ROW_LENGTH for Desktop OpenGL instead */
 #define UPDATE_FAST_SIZE (64 * 64)
-static CC_NOINLINE void UpdateTextureSlow(int x, int y, struct Bitmap* part, int rowWidth) {
+static CC_NOINLINE void UpdateTextureSlow(int x, int y, struct Bitmap* part, int rowWidth, cc_bool full) {
 	BitmapCol buffer[UPDATE_FAST_SIZE];
 	void* ptr = (void*)buffer;
 	int count = part->width * part->height;
@@ -140,31 +107,58 @@ static CC_NOINLINE void UpdateTextureSlow(int x, int y, struct Bitmap* part, int
 		ptr = Mem_Alloc(count, 4, "Gfx_UpdateTexture temp");
 	}
 
-	CopyTextureData(ptr, part->width << 2, part, rowWidth << 2);
-	glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, part->width, part->height, PIXEL_FORMAT, TRANSFER_FORMAT, ptr);
+	CopyTextureData(ptr, part->width * BITMAPCOLOR_SIZE,
+					part, rowWidth   * BITMAPCOLOR_SIZE);
+
+	if (full) {
+		_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, part->width, part->height, 0, PIXEL_FORMAT, TRANSFER_FORMAT, ptr);
+	} else {
+		_glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, part->width, part->height, PIXEL_FORMAT, TRANSFER_FORMAT, ptr);
+	}
 	if (count > UPDATE_FAST_SIZE) Mem_Free(ptr);
 }
 
+static GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags, cc_bool mipmaps) {
+	GfxResourceID texId = NULL;
+	_glGenTextures(1, (GLuint*)&texId);
+	_glBindTexture(GL_TEXTURE_2D, ptr_to_uint(texId));
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (flags & TEXTURE_FLAG_BILINEAR) ? GL_LINEAR : GL_NEAREST);
+
+	if (mipmaps) {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+		if (customMipmapsLevels) {
+			int lvls = CalcMipmapsLevels(bmp->width, bmp->height);
+			glTexParameteri(GL_TEXTURE_2D, _GL_TEXTURE_MAX_LEVEL, lvls);
+		}
+	} else {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (flags & TEXTURE_FLAG_BILINEAR) ? GL_LINEAR : GL_NEAREST);
+	}
+
+	if (bmp->width == rowWidth) {
+		_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bmp->width, bmp->height, 0, PIXEL_FORMAT, TRANSFER_FORMAT, bmp->scan0);
+	} else {
+		UpdateTextureSlow(0, 0, bmp, rowWidth, true);
+	}
+
+	if (mipmaps) Gfx_DoMipmaps(0, 0, bmp, rowWidth, false);
+	return texId;
+}
+
 void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, int rowWidth, cc_bool mipmaps) {
-	glBindTexture(GL_TEXTURE_2D, (GLuint)texId);
-	/* TODO: Use GL_UNPACK_ROW_LENGTH for Desktop OpenGL */
+	_glBindTexture(GL_TEXTURE_2D, ptr_to_uint(texId));
 
 	if (part->width == rowWidth) {
-		glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, part->width, part->height, PIXEL_FORMAT, TRANSFER_FORMAT, part->scan0);
+		_glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, part->width, part->height, PIXEL_FORMAT, TRANSFER_FORMAT, part->scan0);
 	} else {
-		UpdateTextureSlow(x, y, part, rowWidth);
+		UpdateTextureSlow(x, y, part, rowWidth, false);
 	}
+
 	if (mipmaps) Gfx_DoMipmaps(x, y, part, rowWidth, true);
 }
 
-void Gfx_UpdateTexturePart(GfxResourceID texId, int x, int y, struct Bitmap* part, cc_bool mipmaps) {
-	Gfx_UpdateTexture(texId, x, y, part, part->width, mipmaps);
-}
-
 void Gfx_DeleteTexture(GfxResourceID* texId) {
-	GLuint id = (GLuint)(*texId);
-	if (!id) return;
-	glDeleteTextures(1, &id);
+	GLuint id = ptr_to_uint(*texId);
+	if (id) _glDeleteTextures(1, &id);
 	*texId = 0;
 }
 
@@ -177,20 +171,20 @@ void Gfx_DisableMipmaps(void) { }
 *#########################################################################################################################*/
 static PackedCol gfx_clearColor;
 void Gfx_SetFaceCulling(cc_bool enabled)   { gl_Toggle(GL_CULL_FACE); }
-void Gfx_SetAlphaBlending(cc_bool enabled) { gl_Toggle(GL_BLEND); }
+static void SetAlphaBlend(cc_bool enabled) { gl_Toggle(GL_BLEND); }
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
 
 static void GL_ClearColor(PackedCol color) {
 	glClearColor(PackedCol_R(color) / 255.0f, PackedCol_G(color) / 255.0f,
 				 PackedCol_B(color) / 255.0f, PackedCol_A(color) / 255.0f);
 }
-void Gfx_ClearCol(PackedCol color) {
+void Gfx_ClearColor(PackedCol color) {
 	if (color == gfx_clearColor) return;
 	GL_ClearColor(color);
 	gfx_clearColor = color;
 }
 
-void Gfx_SetColWriteMask(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
+static void SetColorWrite(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
 	glColorMask(r, g, b, a);
 }
 
@@ -206,19 +200,19 @@ void Gfx_CalcOrthoMatrix(struct Matrix* matrix, float width, float height, float
 	/*   The simplified calculation below uses: L = 0, R = width, T = 0, B = height */
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  2.0f / width;
-	matrix->row2.Y = -2.0f / height;
-	matrix->row3.Z = -2.0f / (zFar - zNear);
+	matrix->row1.x =  2.0f / width;
+	matrix->row2.y = -2.0f / height;
+	matrix->row3.z = -2.0f / (zFar - zNear);
 
-	matrix->row4.X = -1.0f;
-	matrix->row4.Y =  1.0f;
-	matrix->row4.Z = -(zFar + zNear) / (zFar - zNear);
+	matrix->row4.x = -1.0f;
+	matrix->row4.y =  1.0f;
+	matrix->row4.z = -(zFar + zNear) / (zFar - zNear);
 }
 
-static double Cotangent(double x) { return Math_Cos(x) / Math_Sin(x); }
+static float Cotangent(float x) { return Math_CosF(x) / Math_SinF(x); }
 void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, float zFar) {
 	float zNear = 0.1f;
-	float c = (float)Cotangent(0.5f * fov);
+	float c = Cotangent(0.5f * fov);
 
 	/* Transposed, source https://learn.microsoft.com/en-us/windows/win32/opengl/glfrustum */
 	/* For a FOV based perspective matrix, left/right/top/bottom are calculated as: */
@@ -226,19 +220,19 @@ void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, f
 	/* Calculations are simplified because of left/right and top/bottom symmetry */
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  c / aspect;
-	matrix->row2.Y =  c;
-	matrix->row3.Z = -(zFar + zNear) / (zFar - zNear);
-	matrix->row3.W = -1.0f;
-	matrix->row4.Z = -(2.0f * zFar * zNear) / (zFar - zNear);
-	matrix->row4.W =  0.0f;
+	matrix->row1.x =  c / aspect;
+	matrix->row2.y =  c;
+	matrix->row3.z = -(zFar + zNear) / (zFar - zNear);
+	matrix->row3.w = -1.0f;
+	matrix->row4.z = -(2.0f * zFar * zNear) / (zFar - zNear);
+	matrix->row4.w =  0.0f;
 }
 
 
 /*########################################################################################################################*
 *-----------------------------------------------------------Misc----------------------------------------------------------*
 *#########################################################################################################################*/
-static BitmapCol* GL_GetRow(struct Bitmap* bmp, int y) { 
+static BitmapCol* GL_GetRow(struct Bitmap* bmp, int y, void* ctx) { 
 	/* OpenGL stores bitmap in bottom-up order, so flip order when saving */
 	return Bitmap_GetRow(bmp, (bmp->height - 1) - y); 
 }
@@ -251,11 +245,11 @@ cc_result Gfx_TakeScreenshot(struct Stream* output) {
 	bmp.width  = vp[2]; 
 	bmp.height = vp[3];
 
-	bmp.scan0  = (BitmapCol*)Mem_TryAlloc(bmp.width * bmp.height, 4);
+	bmp.scan0  = (BitmapCol*)Mem_TryAlloc(bmp.width * bmp.height, BITMAPCOLOR_SIZE);
 	if (!bmp.scan0) return ERR_OUT_OF_MEMORY;
 	glReadPixels(0, 0, bmp.width, bmp.height, PIXEL_FORMAT, TRANSFER_FORMAT, bmp.scan0);
 
-	res = Png_Encode(&bmp, output, GL_GetRow, false);
+	res = Png_Encode(&bmp, output, GL_GetRow, false, NULL);
 	Mem_Free(bmp.scan0);
 	return res;
 }
@@ -278,11 +272,11 @@ static void AppendVRAMStats(cc_string* info) {
 }
 
 void Gfx_GetApiInfo(cc_string* info) {
-	GLint depthBits;
+	GLint depthBits = 0;
 	int pointerSize = sizeof(void*) * 8;
 
 	glGetIntegerv(GL_DEPTH_BITS, &depthBits);
-#ifdef CC_BUILD_GLMODERN
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
 	String_Format1(info, "-- Using OpenGL Modern (%i bit) --\n", &pointerSize);
 #else
 	String_Format1(info, "-- Using OpenGL (%i bit) --\n", &pointerSize);
@@ -291,44 +285,57 @@ void Gfx_GetApiInfo(cc_string* info) {
 	String_Format1(info, "Renderer: %c\n",   glGetString(GL_RENDERER));
 	String_Format1(info, "GL version: %c\n", glGetString(GL_VERSION));
 	AppendVRAMStats(info);
-	String_Format2(info, "Max texture size: (%i, %i)\n", &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
+	PrintMaxTextureInfo(info);
 	String_Format1(info, "Depth buffer bits: %i\n",      &depthBits);
 	GLContext_GetApiInfo(info);
 }
 
-void Gfx_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	gfx_minFrameMs = minFrameMs;
-	gfx_vsync      = vsync;
-	if (Gfx.Created) GL_UpdateVsync();
+void Gfx_SetVSync(cc_bool vsync) {
+	gfx_vsync = vsync;
+	if (Gfx.Created) GLContext_SetVSync(gfx_vsync);
 }
 
 void Gfx_BeginFrame(void) { }
-void Gfx_Clear(void) { glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); }
+void Gfx_ClearBuffers(GfxBuffers buffers) {
+	int targets = 0;
+	if (buffers & GFX_BUFFER_COLOR) targets |= GL_COLOR_BUFFER_BIT;
+	if (buffers & GFX_BUFFER_DEPTH) targets |= GL_DEPTH_BUFFER_BIT;
+	
+	glClear(targets); 
+}
 
 void Gfx_EndFrame(void) {
-#ifndef CC_BUILD_GLMODERN
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL1
 	if (Window_IsObscured()) {
 		TickReducedPerformance();
 	} else {
 		EndReducedPerformance();
 	}
 #endif
+	/* TODO always run ?? */
 
 	if (!GLContext_SwapBuffers()) Gfx_LoseContext("GLContext lost");
-	if (gfx_minFrameMs) LimitFPS();
 }
 
 void Gfx_OnWindowResize(void) {
-	/* TODO: Eliminate this nasty hack.. */
-	Game_UpdateDimensions();
-	glViewport(0, 0, Game.Width, Game.Height);
-	
+	Gfx_SetViewport(0, 0, Game.Width, Game.Height);
 	/* With cocoa backend, in some cases [NSOpenGLContext update] will actually */
 	/*  call glViewport with the size of the window framebuffer */
 	/*  https://github.com/glfw/glfw/issues/80 */
 	/* Normally this doesn't matter, but it does when game is compiled against recent */
 	/*  macOS SDK *and* the display is a high DPI display - where glViewport(width, height) */
 	/*  above would otherwise result in game rendering to only 1/4 of the screen */
-	/*  https://github.com/UnknownShadow200/ClassiCube/issues/888 */
+	/*  https://github.com/ClassiCube/ClassiCube/issues/888 */
 	GLContext_Update();
+}
+
+void Gfx_SetViewport(int x, int y, int w, int h) {
+	glViewport(x, y, w, h);
+}
+
+void Gfx_SetScissor(int x, int y, int w, int h) {
+	cc_bool enabled = x != 0 || y != 0 || w != Game.Width || h != Game.Height;
+	if (enabled) { glEnable(GL_SCISSOR_TEST); } else { glDisable(GL_SCISSOR_TEST); }
+
+	glScissor(x, Game.Height - h - y, w, h);
 }

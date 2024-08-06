@@ -1,12 +1,14 @@
 #ifndef CC_STRING_H
 #define CC_STRING_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Provides various string related operations
    Also provides conversions betweens strings and numbers
    Also provides converting code page 437 indices to/from unicode
    Also provides wrapping a single line of text into multiple lines
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 #define STRING_INT_CHARS 24
@@ -25,17 +27,19 @@ static CC_INLINE cc_string String_Init(STRING_REF char* buffer, int length, int 
 CC_API int String_CalcLen(const char* raw, int capacity);
 /* Counts number of characters until a '\0' is found. */
 int String_Length(const char* raw);
+
+/* Constructs a string from a compile time string constant */
+#define String_FromConst(text) { (char*)(text), (sizeof(text) - 1), (sizeof(text) - 1)}
+/* Constructs a string from a compile time array */
+#define String_FromArray(buffer) { buffer, 0, sizeof(buffer)}
+
 /* Constructs a string from a (maybe null terminated) buffer. */
 CC_NOINLINE cc_string String_FromRaw(STRING_REF char* buffer, int capacity);
 /* Constructs a string from a null-terminated constant readonly buffer. */
 CC_API cc_string String_FromReadonly(STRING_REF const char* buffer);
-
-/* Constructs a string from a compile time string constant */
-#define String_FromConst(text) { text, (sizeof(text) - 1), (sizeof(text) - 1)}
-/* Constructs a string from a compile time array */
-#define String_FromArray(buffer) { buffer, 0, sizeof(buffer)}
 /* Constructs a string from a compile time array, that may have arbitary actual length of data at runtime */
 #define String_FromRawArray(buffer) String_FromRaw(buffer, sizeof(buffer))
+
 /* Constructs a string from a compile time array (leaving 1 byte of room for null terminator) */
 #define String_NT_Array(buffer) { buffer, 0, (sizeof(buffer) - 1)}
 /* Initialises a string from a compile time array. */
@@ -70,12 +74,15 @@ CC_API void String_UNSAFE_SplitBy(STRING_REF cc_string* str, char c, cc_string* 
 CC_API int String_UNSAFE_Separate(STRING_REF const cc_string* str, char c, cc_string* key, cc_string* value);
 
 /* Returns non-zero if all characters of the strings are equal. */
-CC_API int String_Equals(const cc_string* a, const cc_string* b);
+CC_API  int String_Equals(      const cc_string* a, const cc_string* b);
+typedef int (*FP_String_Equals)(const cc_string* a, const cc_string* b);
 /* Returns non-zero if all characters of the strings are case-insensitively equal. */
-CC_API int String_CaselessEquals(const cc_string* a, const cc_string* b);
+CC_API  int String_CaselessEquals(      const cc_string* a, const cc_string* b);
+typedef int (*FP_String_CaselessEquals)(const cc_string* a, const cc_string* b);
 /* Returns non-zero if all characters of the strings are case-insensitively equal. */
 /* NOTE: Faster than String_CaselessEquals(a, String_FromReadonly(b)) */
-CC_API int String_CaselessEqualsConst(const cc_string* a, const char* b);
+CC_API  int String_CaselessEqualsConst(      const cc_string* a, const char* b);
+typedef int (*FP_String_CaselessEqualsConst)(const cc_string* a, const char* b);
 /* Breaks down an integer into an array of digits, and returns number of digits. */
 /* NOTE: Digits are in reverse order, so e.g. '200' becomes '0','0','2' */
 int String_MakeUInt32(cc_uint32 num, char* digits);
@@ -98,7 +105,8 @@ CC_API void String_AppendPaddedInt(cc_string* str, int num, int minDigits);
 /*  e.g. 1.0f produces "1", 2.6745f produces "2.67" when fracDigits is 2 */
 CC_API void String_AppendFloat(cc_string* str, float num, int fracDigits); /* TODO: Need to account for , or . for decimal */
 /* Attempts to append characters. src MUST be null-terminated. */
-CC_API void String_AppendConst(cc_string* str, const char* src);
+CC_API  void String_AppendConst(      cc_string* str, const char* src);
+typedef void (*FP_String_AppendConst)(cc_string* str, const char* src);
 /* Attempts to append characters. */
 void String_AppendAll(cc_string* str, const void* data, int len);
 /* Attempts to append characters of a string. */
@@ -135,15 +143,18 @@ CC_API int String_IndexOfConst(const cc_string* str, const char* sub);
 /* Returns non-zero if given substring is inside the given string. */
 #define String_ContainsConst(str, sub) (String_IndexOfConst(str, sub) >= 0)
 /* Returns non-zero if given substring is case-insensitively inside the given string. */
-CC_API int String_CaselessContains(const cc_string* str, const cc_string* sub);
+CC_API  int String_CaselessContains(      const cc_string* str, const cc_string* sub);
+typedef int (*FP_String_CaselessContains)(const cc_string* str, const cc_string* sub);
 /* Returns non-zero if given substring is case-insensitively equal to the beginning of the given string. */
-CC_API int String_CaselessStarts(const cc_string* str, const cc_string* sub);
+CC_API  int String_CaselessStarts(      const cc_string* str, const cc_string* sub);
+typedef int (*FP_String_CaselessStarts)(const cc_string* str, const cc_string* sub);
 /* Returns non-zero if given substring is case-insensitively equal to the ending of the given string. */
-CC_API int String_CaselessEnds(const cc_string* str, const cc_string* sub);
+CC_API  int String_CaselessEnds(      const cc_string* str, const cc_string* sub);
+typedef int (*FP_String_CaselessEnds)(const cc_string* str, const cc_string* sub);
 /* Compares the length of the given strings, then compares the characters if same length. Returns: */
-/* -X if a.length < b.length, X if a.length > b.length */
-/* -X if a.buffer[i] < b.buffer[i], X if a.buffer[i] > b.buffer[i] */
-/* else returns 0. NOTE: The return value is not just in -1,0,1! */
+/*  -X if a.length < b.length, X if a.length > b.length */
+/*  -X if a.buffer[i] < b.buffer[i], X if a.buffer[i] > b.buffer[i] */
+/*  else returns 0. NOTE: The return value is not just in -1,0,1! */
 CC_API int String_Compare(const cc_string* a, const cc_string* b);
 
 /* String_Format is provided for formatting strings (similiar to printf)
@@ -162,14 +173,18 @@ Supported specifiers for string formatting:
 */
 
 /* See String_Format4 */
-CC_API void String_Format1(cc_string* str, const char* format, const void* a1);
+CC_API  void String_Format1(      cc_string* str, const char* format, const void* a1);
+typedef void (*FP_String_Format1)(cc_string* str, const char* format, const void* a1);
 /* See String_Format4 */
-CC_API void String_Format2(cc_string* str, const char* format, const void* a1, const void* a2);
+CC_API  void String_Format2(      cc_string* str, const char* format, const void* a1, const void* a2);
+typedef void (*FP_String_Format2)(cc_string* str, const char* format, const void* a1, const void* a2);
 /* See String_Format4 */
-CC_API void String_Format3(cc_string* str, const char* format, const void* a1, const void* a2, const void* a3);
+CC_API  void String_Format3(      cc_string* str, const char* format, const void* a1, const void* a2, const void* a3);
+typedef void (*FP_String_Format3)(cc_string* str, const char* format, const void* a1, const void* a2, const void* a3);
 /* Formats the arguments in a string, similiar to printf or C# String.Format
 NOTE: This is a low level API. Argument count and types are not checked at all. */
-CC_API void String_Format4(cc_string* str, const char* format, const void* a1, const void* a2, const void* a3, const void* a4);
+CC_API  void String_Format4(      cc_string* str, const char* format, const void* a1, const void* a2, const void* a3, const void* a4);
+typedef void (*FP_String_Format4)(cc_string* str, const char* format, const void* a1, const void* a2, const void* a3, const void* a4);
 
 /* Converts a code page 437 character to its unicode equivalent. */
 cc_unichar Convert_CP437ToUnicode(char c);
@@ -186,16 +201,16 @@ int Convert_CP437ToUtf8(char c, cc_uint8* data);
 
 /* Attempts to append all characters from UTF16 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_AppendUtf16(cc_string* str, const void* data, int numBytes);
+CC_API void String_AppendUtf16(cc_string* str, const void* data, int numBytes);
 /* Attempts to append all characters from UTF8 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_AppendUtf8(cc_string* str, const void* data, int numBytes);
+CC_API void String_AppendUtf8(cc_string* str, const void* data, int numBytes);
 /* Attempts to append all characters from CP-1252 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_DecodeCP1252(cc_string* str, const void* data, int numBytes);
+CC_API void String_AppendCP1252(cc_string* str, const void* data, int numBytes);
 /* Encodes a string in UTF8 format, also null terminating the string. */
 /* Returns the number of bytes written, excluding trailing NULL terminator. */
-int String_EncodeUtf8(void* data, const cc_string* src);
+CC_API int String_EncodeUtf8(void* data, const cc_string* src);
 
 /* Attempts to convert the given string into an unsigned 8 bit integer. */
 CC_API cc_bool Convert_ParseUInt8(const cc_string*  str, cc_uint8* value);
@@ -257,4 +272,6 @@ void WordWrap_GetCoords(int index, const cc_string* lines, int numLines, int* co
 int  WordWrap_GetBackLength(const cc_string* text, int index);
 /* Returns number of characters from current character to start of next word. */
 int  WordWrap_GetForwardLength(const cc_string* text, int index);
+
+CC_END_HEADER
 #endif

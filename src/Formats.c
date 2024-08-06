@@ -16,7 +16,11 @@
 #include "Chat.h"
 #include "TexturePack.h"
 #include "Utils.h"
-static cc_bool calcDefaultSpawn;
+
+#ifdef CC_BUILD_FILESYSTEM
+static struct LocationUpdate* spawn_point;
+static struct MapImporter* imp_head;
+static struct MapImporter* imp_tail;
 
 
 /*########################################################################################################################*
@@ -41,35 +45,38 @@ static cc_result Map_SkipGZipHeader(struct Stream* stream) {
 	return 0;
 }
 
-IMapImporter Map_FindImporter(const cc_string* path) {
-	static const cc_string cw   = String_FromConst(".cw"),  lvl = String_FromConst(".lvl");
-	static const cc_string fcm  = String_FromConst(".fcm"), dat = String_FromConst(".dat");
-	static const cc_string mine = String_FromConst(".mine");
+void MapImporter_Register(struct MapImporter* imp) {
+	LinkedList_Append(imp, imp_head, imp_tail);
+}
 
-	if (String_CaselessEnds(path,   &cw))  return Cw_Load;
-	if (String_CaselessEnds(path,  &lvl)) return Lvl_Load;
-	if (String_CaselessEnds(path,  &fcm)) return Fcm_Load;
-	if (String_CaselessEnds(path,  &dat)) return Dat_Load;
-	if (String_CaselessEnds(path, &mine)) return Dat_Load;
+struct MapImporter* MapImporter_Find(const cc_string* path) {
+	struct MapImporter* imp;
+	cc_string ext;
 
+	for (imp = imp_head; imp; imp = imp->next)
+	{
+		ext = String_FromReadonly(imp->fileExt);
+		if (String_CaselessEnds(path, &ext)) return imp;
+	}
 	return NULL;
 }
 
 cc_result Map_LoadFrom(const cc_string* path) {
 	cc_string relPath, fileName, fileExt;
-	IMapImporter importer;
+	struct LocationUpdate update = { 0 };
+	struct MapImporter* imp;
 	struct Stream stream;
 	cc_result res;
 	Game_Reset();
 	
-	calcDefaultSpawn = false;
+	spawn_point = &update;
 	res = Stream_OpenFile(&stream, path);
 	if (res) { Logger_SysWarn2(res, "opening", path); return res; }
 
-	importer = Map_FindImporter(path);
-	if (!importer) {
+	imp = MapImporter_Find(path);
+	if (!imp) {
 		res = ERR_NOT_SUPPORTED;
-	} else if ((res = importer(&stream))) {
+	} else if ((res = imp->import(&stream))) {
 		World_Reset();
 	}
 
@@ -78,8 +85,8 @@ cc_result Map_LoadFrom(const cc_string* path) {
 	if (res) Logger_SysWarn2(res, "decoding", path);
 
 	World_SetNewMap(World.Blocks, World.Width, World.Height, World.Length);
-	if (calcDefaultSpawn) LocalPlayer_CalcDefaultSpawn();
-	LocalPlayer_MoveToSpawn();
+	if (!spawn_point) LocalPlayer_CalcDefaultSpawn(Entities.CurPlayer, &update);
+	LocalPlayers_MoveToSpawn(&update);
 
 	relPath = *path;
 	Utils_UNSAFE_GetFilename(&relPath);
@@ -169,14 +176,15 @@ static cc_result Lvl_ReadCustomBlocks(struct Stream* stream) {
 	return 0;
 }
 
-cc_result Lvl_Load(struct Stream* stream) {
+/* Imports a world from a .lvl MCSharp server map file */
+/* Used by MCSharp/MCLawl/MCForge/MCDzienny/MCGalaxy */
+static cc_result Lvl_Load(struct Stream* stream) {
 	cc_uint8 header[18];
 	cc_uint8* blocks;
 	cc_uint8 section;
 	cc_result res;
 	int i;
 
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	struct Stream compStream;
 	struct InflateState state;
 	Inflate_MakeStream2(&compStream, &state, stream);
@@ -189,11 +197,12 @@ cc_result Lvl_Load(struct Stream* stream) {
 	World.Length = Stream_GetU16_LE(&header[4]);
 	World.Height = Stream_GetU16_LE(&header[6]);
 
-	p->Spawn.X = Stream_GetU16_LE(&header[8]);
-	p->Spawn.Z = Stream_GetU16_LE(&header[10]);
-	p->Spawn.Y = Stream_GetU16_LE(&header[12]);
-	p->SpawnYaw   = Math_Packed2Deg(header[14]);
-	p->SpawnPitch = Math_Packed2Deg(header[15]);
+	spawn_point->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
+	spawn_point->pos.x = Stream_GetU16_LE(&header[8]);
+	spawn_point->pos.z = Stream_GetU16_LE(&header[10]);
+	spawn_point->pos.y = Stream_GetU16_LE(&header[12]);
+	spawn_point->yaw   = Math_Packed2Deg(header[14]);
+	spawn_point->pitch = Math_Packed2Deg(header[15]);
 	/* (2) pervisit, perbuild permissions */
 
 	if ((res = Map_ReadBlocks(&compStream))) return res;
@@ -256,12 +265,13 @@ static cc_result Fcm_ReadString(struct Stream* stream) {
 	return stream->Skip(stream, len);
 }
 
-cc_result Fcm_Load(struct Stream* stream) {
+/* Imports a world from a .fcm fCraft server map file (v3 only) */
+/* Used by fCraft/800Craft/LegendCraft/ProCraft */
+static cc_result Fcm_Load(struct Stream* stream) {
 	cc_uint8 header[79];	
 	cc_result res;
 	int i, count;
 
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	struct Stream compStream;
 	struct InflateState state;
 	Inflate_MakeStream2(&compStream, &state, stream);
@@ -274,11 +284,12 @@ cc_result Fcm_Load(struct Stream* stream) {
 	World.Height = Stream_GetU16_LE(&header[7]);
 	World.Length = Stream_GetU16_LE(&header[9]);
 	
-	p->Spawn.X = ((int)Stream_GetU32_LE(&header[11])) / 32.0f;
-	p->Spawn.Y = ((int)Stream_GetU32_LE(&header[15])) / 32.0f;
-	p->Spawn.Z = ((int)Stream_GetU32_LE(&header[19])) / 32.0f;
-	p->SpawnYaw   = Math_Packed2Deg(header[23]);
-	p->SpawnPitch = Math_Packed2Deg(header[24]);
+	spawn_point->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
+	spawn_point->pos.x = ((int)Stream_GetU32_LE(&header[11])) / 32.0f;
+	spawn_point->pos.y = ((int)Stream_GetU32_LE(&header[15])) / 32.0f;
+	spawn_point->pos.z = ((int)Stream_GetU32_LE(&header[19])) / 32.0f;
+	spawn_point->yaw   = Math_Packed2Deg(header[23]);
+	spawn_point->pitch = Math_Packed2Deg(header[24]);
 
 	/* header[25] (4) date modified */
 	/* header[29] (4) date created */
@@ -307,7 +318,9 @@ enum NbtTagType {
 
 #define NBT_SMALL_SIZE  STRING_SIZE
 #define NBT_STRING_SIZE STRING_SIZE
+
 #define NbtTag_IsSmall(tag) ((tag)->dataSize <= NBT_SMALL_SIZE)
+#define IsTag(tag, tagName) (String_CaselessEqualsConst(&tag->name, tagName))
 struct NbtTag;
 
 struct NbtTag {
@@ -325,10 +338,11 @@ struct NbtTag {
 		float     f32;
 		cc_uint8  small[NBT_SMALL_SIZE];
 		cc_uint8* big; /* malloc for big byte arrays */
-		struct { cc_string text; char buffer[NBT_STRING_SIZE]; } str;
+		struct { cc_string text; char buffer[STRING_SIZE * 2]; } str;
 	} value;
 	char _nameBuffer[NBT_STRING_SIZE];
 	cc_result result;
+	int listIndex;
 };
 
 static cc_uint8 NbtTag_U8(struct NbtTag* tag) {
@@ -400,7 +414,8 @@ static cc_result Nbt_ReadString(struct Stream* stream, cc_string* str) {
 }
 
 typedef void (*Nbt_Callback)(struct NbtTag* tag);
-static cc_result Nbt_ReadTag(cc_uint8 typeId, cc_bool readTagName, struct Stream* stream, struct NbtTag* parent, Nbt_Callback callback) {
+static cc_result Nbt_ReadTag(cc_uint8 typeId, cc_bool readTagName, struct Stream* stream, 
+							struct NbtTag* parent, Nbt_Callback callback, int listIndex) {
 	struct NbtTag tag;
 	cc_uint8 childType;
 	cc_uint8 tmp[5];	
@@ -408,9 +423,10 @@ static cc_result Nbt_ReadTag(cc_uint8 typeId, cc_bool readTagName, struct Stream
 	cc_uint32 i, count;
 	
 	if (typeId == NBT_END) return 0;
-	tag.type   = typeId; 
-	tag.parent = parent;
-	tag.dataSize = 0;
+	tag.type      = typeId; 
+	tag.parent    = parent;
+	tag.dataSize  = 0;
+	tag.listIndex = listIndex;
 	String_InitArray(tag.name, tag._nameBuffer);
 
 	if (readTagName) {
@@ -459,7 +475,7 @@ static cc_result Nbt_ReadTag(cc_uint8 typeId, cc_bool readTagName, struct Stream
 		count = Stream_GetU32_BE(&tmp[1]);
 
 		for (i = 0; i < count; i++) {
-			res = Nbt_ReadTag(childType, false, stream, &tag, callback);
+			res = Nbt_ReadTag(childType, false, stream, &tag, callback, i);
 			if (res) break;
 		}
 		break;
@@ -469,7 +485,7 @@ static cc_result Nbt_ReadTag(cc_uint8 typeId, cc_bool readTagName, struct Stream
 			if ((res = stream->ReadU8(stream, &childType))) break;
 			if (childType == NBT_END) break;
 
-			res = Nbt_ReadTag(childType, true, stream, &tag, callback);
+			res = Nbt_ReadTag(childType, true, stream, &tag, callback, 0);
 			if (res) break;
 		}
 		break;
@@ -484,8 +500,39 @@ static cc_result Nbt_ReadTag(cc_uint8 typeId, cc_bool readTagName, struct Stream
 	if (!NbtTag_IsSmall(&tag)) Mem_Free(tag.value.big);
 	return tag.result;
 }
-#define IsTag(tag, tagName) (String_CaselessEqualsConst(&tag->name, tagName))
 
+
+static BlockRaw* Nbt_TakeArray(struct NbtTag* tag, const char* type) {
+	BlockRaw* ptr;
+	if (NbtTag_IsSmall(tag)) {
+		/* Small data is stored inline in tha tag, so need to copy it out */
+		ptr = (BlockRaw*)Mem_Alloc(tag->dataSize, 1, type);
+		Mem_Copy(ptr, tag->value.small, tag->dataSize);
+	} else {
+		ptr = tag->value.big;
+		tag->value.big = NULL; /* So Nbt_ReadTag doesn't call Mem_Free on the array */
+	}
+	return ptr;
+}
+
+static cc_result Nbt_Read(struct Stream* stream, Nbt_Callback callback) {
+	struct Stream compStream;
+	struct InflateState state;
+	cc_result res;
+	cc_uint8 tag;
+
+	Inflate_MakeStream2(&compStream, &state, stream);
+	if ((res = Map_SkipGZipHeader(stream))) return res;
+	if ((res = compStream.ReadU8(&compStream, &tag))) return res;
+
+	if (tag != NBT_DICT) return CW_ERR_ROOT_TAG;
+	return Nbt_ReadTag(NBT_DICT, true, &compStream, NULL, callback, 0);
+}
+
+
+/*########################################################################################################################*
+*--------------------------------------------------------NBTWriter--------------------------------------------------------*
+*#########################################################################################################################*/
 static cc_uint8* Nbt_WriteConst(cc_uint8* data, const char* text) {
 	int i, len = String_Length(text);
 	*data++ = 0;
@@ -604,17 +651,6 @@ COMPOUND "ClassicWorld" {
 		}
 	}
 }*/
-static BlockRaw* Cw_GetBlocks(struct NbtTag* tag) {
-	BlockRaw* ptr;
-	if (NbtTag_IsSmall(tag)) {
-		ptr = (BlockRaw*)Mem_Alloc(tag->dataSize, 1, ".cw map blocks");
-		Mem_Copy(ptr, tag->value.small, tag->dataSize);
-	} else {
-		ptr = tag->value.big;
-		tag->value.big = NULL; /* So Nbt_ReadTag doesn't call Mem_Free on World.Blocks */
-	}
-	return ptr;
-}
 
 static void Cw_Callback_1(struct NbtTag* tag) {
 	if (IsTag(tag, "X")) { World.Width  = NbtTag_U16(tag); return; }
@@ -632,27 +668,28 @@ static void Cw_Callback_1(struct NbtTag* tag) {
 
 	if (IsTag(tag, "BlockArray")) {
 		World.Volume = tag->dataSize;
-		World.Blocks = Cw_GetBlocks(tag);
+		World.Blocks = Nbt_TakeArray(tag, ".cw map blocks");
 	}
 #ifdef EXTENDED_BLOCKS
-	if (IsTag(tag, "BlockArray2")) World_SetMapUpper(Cw_GetBlocks(tag));
+	if (IsTag(tag, "BlockArray2")) {
+		World_SetMapUpper(Nbt_TakeArray(tag, ".cw map blocks2"));
+	}
 #endif
 }
 
 static void Cw_Callback_2(struct NbtTag* tag) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
-
 	if (IsTag(tag->parent, "MapGenerator")) {
 		if (IsTag(tag, "Seed")) { World.Seed = NbtTag_I32(tag); return; }
 		return;
 	}
 	if (!IsTag(tag->parent, "Spawn")) return;
+	spawn_point->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
 	
-	if (IsTag(tag, "X")) { p->Spawn.X = NbtTag_I16(tag); return; }
-	if (IsTag(tag, "Y")) { p->Spawn.Y = NbtTag_I16(tag); return; }
-	if (IsTag(tag, "Z")) { p->Spawn.Z = NbtTag_I16(tag); return; }
-	if (IsTag(tag, "H")) { p->SpawnYaw   = Math_Packed2Deg(NbtTag_U8(tag)); return; }
-	if (IsTag(tag, "P")) { p->SpawnPitch = Math_Packed2Deg(NbtTag_U8(tag)); return; }
+	if (IsTag(tag, "X")) { spawn_point->pos.x = NbtTag_I16(tag); return; }
+	if (IsTag(tag, "Y")) { spawn_point->pos.y = NbtTag_I16(tag); return; }
+	if (IsTag(tag, "Z")) { spawn_point->pos.z = NbtTag_I16(tag); return; }
+	if (IsTag(tag, "H")) { spawn_point->yaw   = Math_Packed2Deg(NbtTag_U8(tag)); return; }
+	if (IsTag(tag, "P")) { spawn_point->pitch = Math_Packed2Deg(NbtTag_U8(tag)); return; }
 }
 
 static BlockID cw_curID;
@@ -665,7 +702,7 @@ static PackedCol Cw_ParseColor(PackedCol defValue) {
 
 static void Cw_Callback_4(struct NbtTag* tag) {
 	BlockID id = cw_curID;
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+	struct LocalPlayer* p = &LocalPlayer_Instances[0];
 
 	if (!IsTag(tag->parent->parent, "CPE")) return;
 	if (!IsTag(tag->parent->parent->parent, "Metadata")) return;
@@ -761,7 +798,7 @@ static void Cw_Callback_5(struct NbtTag* tag) {
 		if (IsTag(tag, "CollideType"))    { Blocks.Collide[id] = NbtTag_U8(tag); return; }
 		if (IsTag(tag, "Speed"))          { Blocks.SpeedMultiplier[id] = NbtTag_F32(tag); return; }
 		if (IsTag(tag, "TransmitsLight")) { Blocks.BlocksLight[id] = NbtTag_U8(tag) == 0; return; }
-		if (IsTag(tag, "FullBright"))     { Blocks.FullBright[id] = NbtTag_U8(tag) != 0; return; }
+		if (IsTag(tag, "FullBright"))     { Blocks.Brightness[id] = Block_ReadBrightness(NbtTag_U8(tag)); return; }
 		if (IsTag(tag, "BlockDraw"))      { Blocks.Draw[id] = NbtTag_U8(tag); return; }
 		if (IsTag(tag, "Shape"))          { Blocks.SpriteOffset[id] = NbtTag_U8(tag); return; }
 
@@ -801,8 +838,8 @@ static void Cw_Callback_5(struct NbtTag* tag) {
 			if (!arr) return;
 
 			Blocks.FogDensity[id] = (arr[0] + 1) / 128.0f;
-			/* Fix for older ClassicalSharp versions which saved wrong fog density value */
-			if (arr[0] == 0xFF) Blocks.FogDensity[id] = 0.0f;
+			/* Backwards compatibility with apps that use 0xFF to indicate no fog */
+			if (arr[0] == 0 || arr[0] == 0xFF) Blocks.FogDensity[id] = 0.0f;
 			Blocks.FogCol[id] = PackedCol_Make(arr[1], arr[2], arr[3], 255);
 			return;
 		}
@@ -811,9 +848,9 @@ static void Cw_Callback_5(struct NbtTag* tag) {
 			arr = NbtTag_U8_Array(tag, 6);
 			if (!arr) return;
 
-			Blocks.MinBB[id].X = (cc_int8)arr[0] / 16.0f; Blocks.MaxBB[id].X = (cc_int8)arr[3] / 16.0f;
-			Blocks.MinBB[id].Y = (cc_int8)arr[1] / 16.0f; Blocks.MaxBB[id].Y = (cc_int8)arr[4] / 16.0f;
-			Blocks.MinBB[id].Z = (cc_int8)arr[2] / 16.0f; Blocks.MaxBB[id].Z = (cc_int8)arr[5] / 16.0f;
+			Blocks.MinBB[id].x = (cc_int8)arr[0] / 16.0f; Blocks.MaxBB[id].x = (cc_int8)arr[3] / 16.0f;
+			Blocks.MinBB[id].y = (cc_int8)arr[1] / 16.0f; Blocks.MaxBB[id].y = (cc_int8)arr[4] / 16.0f;
+			Blocks.MinBB[id].z = (cc_int8)arr[2] / 16.0f; Blocks.MaxBB[id].z = (cc_int8)arr[5] / 16.0f;
 			return;
 		}
 	}
@@ -834,18 +871,10 @@ static void Cw_Callback(struct NbtTag* tag) {
 	        0             1         2        3          4   */
 }
 
-cc_result Cw_Load(struct Stream* stream) {
-	struct Stream compStream;
-	struct InflateState state;
-	cc_result res;
-	cc_uint8 tag;
-
-	Inflate_MakeStream2(&compStream, &state, stream);
-	if ((res = Map_SkipGZipHeader(stream))) return res;
-	if ((res = compStream.ReadU8(&compStream, &tag))) return res;
-
-	if (tag != NBT_DICT) return CW_ERR_ROOT_TAG;
-	return Nbt_ReadTag(NBT_DICT, true, &compStream, NULL, Cw_Callback);
+/* Imports a world from a .cw ClassicWorld map file */
+/* Used by ClassiCube/ClassicalSharp */
+static cc_result Cw_Load(struct Stream* stream) {
+	return Nbt_Read(stream, Cw_Callback);
 }
 
 
@@ -1209,7 +1238,7 @@ Classic 0.15 to Classic 0.30:
 
 static void Dat_Format0And1(void) {
 	/* Formats 0 and 1 don't store spawn position, so use default of map centre */
-	calcDefaultSpawn = true;
+	spawn_point = NULL;
 
 	/* Similiar env to how it appears in preclassic - 0.13 classic client */
 	Env.CloudsHeight = -30000;
@@ -1257,7 +1286,6 @@ static cc_result Dat_LoadFormat1(struct Stream* stream) {
 }
 
 static cc_result Dat_LoadFormat2(struct Stream* stream) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	struct JClassDesc classes[CLASS_CAPACITY];
 	cc_uint8 header[2 + 2];
 	struct JUnion obj;
@@ -1297,17 +1325,22 @@ static cc_result Dat_LoadFormat2(struct Stream* stream) {
 			World.Blocks = field->Value.Array.Ptr;
 			World.Volume = field->Value.Array.Size;
 		} else if (String_CaselessEqualsConst(&fieldName, "xSpawn")) {
-			p->Spawn.X = (float)Java_I32(field);
+			spawn_point->pos.x = (float)Java_I32(field);
+			spawn_point->flags = LU_HAS_POS;
 		} else if (String_CaselessEqualsConst(&fieldName, "ySpawn")) {
-			p->Spawn.Y = (float)Java_I32(field);
+			spawn_point->pos.y = (float)Java_I32(field);
+			spawn_point->flags = LU_HAS_POS;
 		} else if (String_CaselessEqualsConst(&fieldName, "zSpawn")) {
-			p->Spawn.Z = (float)Java_I32(field);
+			spawn_point->pos.z = (float)Java_I32(field);
+			spawn_point->flags = LU_HAS_POS;
 		}
 	}
 	return 0;
 }
 
-cc_result Dat_Load(struct Stream* stream) {
+/* Imports a world from a .dat classic map file */
+/* Used by Minecraft Classic/WoM client */
+static cc_result Dat_Load(struct Stream* stream) {
 	cc_uint8 header[4 + 1];
 	cc_uint32 signature;
 	cc_result res;
@@ -1340,6 +1373,112 @@ cc_result Dat_Load(struct Stream* stream) {
 		/* Bogus .dat file */
 	default:   return DAT_ERR_VERSION;
 	}
+}
+
+
+/*########################################################################################################################*
+*-----------------------------------------------------MCLevel format------------------------------------------------------*
+*#########################################################################################################################*/
+/* MCLevel is a NBT tag based map format used by Minecraft Indev. Tags not listed below are discarded.
+COMPOUND "MinecraftLevel" {
+	COMPOUND "Map" {
+		I16 "Width", "Height", "Length"
+		I16 "Spawn" [3]
+		U8* "Blocks"
+	}
+	COMPOUND "Environment" {
+		I32 "SkyColor"
+		I32 "FogColor"
+		I32 "CloudColor"
+		I16 "CloudHeight"
+	}
+}*/
+static int mcl_edgeHeight, mcl_sidesHeight;
+
+static void MCLevel_ParseMap(struct NbtTag* tag) {
+	if (IsTag(tag, "width"))  { World.Width  = NbtTag_U16(tag); return; }
+	if (IsTag(tag, "height")) { World.Height = NbtTag_U16(tag); return; }
+	if (IsTag(tag, "length")) { World.Length = NbtTag_U16(tag); return; }
+
+	if (IsTag(tag, "blocks")) {
+		World.Volume = tag->dataSize;
+		World.Blocks = Nbt_TakeArray(tag, ".mclevel map blocks");
+	}
+}
+
+static PackedCol MCLevel_ParseColor(struct NbtTag* tag) {
+	int RGB = NbtTag_I32(tag);
+	return PackedCol_Make(RGB >> 16, RGB >> 8, RGB, 255);
+}
+
+static void MCLevel_ParseEnvironment(struct NbtTag* tag) {
+	if (IsTag(tag, "SkyColor")) {
+		Env.SkyCol    = MCLevel_ParseColor(tag);
+	} else if (IsTag(tag, "FogColor")) {
+		Env.FogCol    = MCLevel_ParseColor(tag);
+	} else if (IsTag(tag, "CloudColor")) {
+		Env.CloudsCol = MCLevel_ParseColor(tag);
+	} else if (IsTag(tag, "CloudHeight")) {
+		Env.CloudsHeight = NbtTag_U16(tag);
+	} else if (IsTag(tag, "SurroundingGroundType")) {
+		Env.SidesBlock  = NbtTag_U8(tag);
+		/* TODO need to explore this fully */
+		if (Env.SidesBlock == BLOCK_GRASS) Env.SidesBlock = BLOCK_DIRT;
+	} else if (IsTag(tag, "SurroundingWaterType")) {
+		Env.EdgeBlock   = NbtTag_U8(tag);
+	} else if (IsTag(tag, "SurroundingGroundHeight")) {
+		mcl_sidesHeight = NbtTag_U16(tag);
+	} else if (IsTag(tag, "SurroundingWaterHeight")) {
+		mcl_edgeHeight  = NbtTag_U16(tag);
+	}
+	/* TODO: SkyBrightness */
+}
+
+
+static void MCLevel_Callback_2(struct NbtTag* tag) {
+	struct NbtTag* group = tag->parent;
+	if (IsTag(group, "Map")) {
+		MCLevel_ParseMap(tag);
+	} else if (IsTag(group, "Environment")) {
+		MCLevel_ParseEnvironment(tag);
+	}
+}
+
+static void MCLevel_Callback_3(struct NbtTag* tag) {
+	struct NbtTag* group = tag->parent->parent;
+	struct NbtTag* field = tag->parent;
+
+	if (IsTag(group, "Map") && IsTag(field, "spawn")) {
+		cc_int16 value     = NbtTag_I16(tag);
+		spawn_point->flags = LU_HAS_POS;
+
+		if (tag->listIndex == 0) spawn_point->pos.x = value;
+		if (tag->listIndex == 1) spawn_point->pos.y = value - 1.0f;
+		if (tag->listIndex == 2) spawn_point->pos.z = value;
+	}
+}
+
+static void MCLevel_Callback(struct NbtTag* tag) {
+	struct NbtTag* tmp = tag->parent;
+	int depth = 0;
+	while (tmp) { depth++; tmp = tmp->parent; }
+
+	switch (depth) {
+	case 2: MCLevel_Callback_2(tag); return;
+	case 3: MCLevel_Callback_3(tag); return;
+	}
+	/* MinecraftLevel -> Map/Environment -> [value]
+			0					1				 2 */
+}
+
+/* Imports a world from a .mclevel NBT map file */
+/* Used by Minecraft Indev client */
+static cc_result MCLevel_Load(struct Stream* stream) {
+	cc_result res = Nbt_Read(stream, MCLevel_Callback);
+
+	Env.EdgeHeight  = mcl_edgeHeight;
+	Env.SidesOffset = mcl_sidesHeight - mcl_edgeHeight;
+	return res;
 }
 
 
@@ -1407,21 +1546,21 @@ static cc_result Cw_WriteBockDef(struct Stream* stream, int b) {
 
 		cur  = Nbt_WriteUInt8(cur,  "TransmitsLight", Blocks.BlocksLight[b] ? 0 : 1);
 		cur  = Nbt_WriteUInt8(cur,  "WalkSound",      Blocks.DigSounds[b]);
-		cur  = Nbt_WriteUInt8(cur,  "FullBright",     Blocks.FullBright[b] ? 1 : 0);
-		cur  = Nbt_WriteUInt8(cur,  "Shape",          sprite ? 0 : (cc_uint8)(Blocks.MaxBB[b].Y * 16));
+		cur  = Nbt_WriteUInt8(cur,  "FullBright",     Block_WriteFullBright(Blocks.Brightness[b]));
+		cur  = Nbt_WriteUInt8(cur,  "Shape",          sprite ? 0 : (cc_uint8)(Blocks.MaxBB[b].y * 16));
 		cur  = Nbt_WriteUInt8(cur,  "BlockDraw",      sprite ? Blocks.SpriteOffset[b] : Blocks.Draw[b]);
 
 		cur = Nbt_WriteArray(cur, "Fog", 4);
 		fog = (cc_uint8)(128 * Blocks.FogDensity[b] - 1);
 		col = Blocks.FogCol[b];
-		cur[0] = Blocks.FogDensity[b] ? fog : 0;
+		cur[0] = Blocks.FogDensity[b] ? fog : 0xFF; /* write 0xFF instead of 0 for backwards compatibility */
 		cur[1] = PackedCol_R(col); cur[2] = PackedCol_G(col); cur[3] = PackedCol_B(col);
 		cur += 4;
 
 		cur  = Nbt_WriteArray(cur,  "Coords", 6);
 		minBB  = Blocks.MinBB[b]; maxBB = Blocks.MaxBB[b];
-		cur[0] = (cc_uint8)(minBB.X * 16); cur[1] = (cc_uint8)(minBB.Y * 16); cur[2] = (cc_uint8)(minBB.Z * 16);
-		cur[3] = (cc_uint8)(maxBB.X * 16); cur[4] = (cc_uint8)(maxBB.Y * 16); cur[5] = (cc_uint8)(maxBB.Z * 16);
+		cur[0] = (cc_uint8)(minBB.x * 16); cur[1] = (cc_uint8)(minBB.y * 16); cur[2] = (cc_uint8)(minBB.z * 16);
+		cur[3] = (cc_uint8)(maxBB.x * 16); cur[4] = (cc_uint8)(maxBB.y * 16); cur[5] = (cc_uint8)(maxBB.z * 16);
 		cur += 6;
 
 		name = Block_UNSAFE_GetName(b);
@@ -1432,9 +1571,9 @@ static cc_result Cw_WriteBockDef(struct Stream* stream, int b) {
 }
 
 cc_result Cw_Save(struct Stream* stream) {
+	struct LocalPlayer* p = Entities.CurPlayer;
 	cc_uint8 buffer[2048];
 	cc_uint8* cur;
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	cc_result res;
 	int b;
 
@@ -1455,9 +1594,9 @@ cc_result Cw_Save(struct Stream* stream) {
 	/* TODO: Maybe keep real spawn too? */
 	cur = Nbt_WriteDict(cur, "Spawn");
 	{
-		cur  = Nbt_WriteUInt16(cur, "X", (cc_uint16)p->Base.Position.X);
-		cur  = Nbt_WriteUInt16(cur, "Y", (cc_uint16)p->Base.Position.Y);
-		cur  = Nbt_WriteUInt16(cur, "Z", (cc_uint16)p->Base.Position.Z);
+		cur  = Nbt_WriteUInt16(cur, "X", (cc_uint16)p->Base.Position.x);
+		cur  = Nbt_WriteUInt16(cur, "Y", (cc_uint16)p->Base.Position.y);
+		cur  = Nbt_WriteUInt16(cur, "Z", (cc_uint16)p->Base.Position.z);
 		cur  = Nbt_WriteUInt8(cur,  "H", Math_Deg2Packed(p->SpawnYaw));
 		cur  = Nbt_WriteUInt8(cur,  "P", Math_Deg2Packed(p->SpawnPitch));
 	} *cur++ = NBT_END;
@@ -1482,7 +1621,7 @@ cc_result Cw_Save(struct Stream* stream) {
 	{
 		cur = Nbt_WriteDict(cur, "ClickDistance");
 		{
-			cur  = Nbt_WriteUInt16(cur, "Distance", (cc_uint16)(LocalPlayer_Instance.ReachDistance * 32));
+			cur  = Nbt_WriteUInt16(cur, "Distance", (cc_uint16)(p->ReachDistance * 32));
 		} *cur++ = NBT_END;
 
 		cur = Nbt_WriteDict(cur, "EnvWeatherType");
@@ -1599,9 +1738,9 @@ static const struct JField {
 	{ JFIELD_I32, false, "width",  &World.Width  },
 	{ JFIELD_I32, false, "depth",  &World.Height },
 	{ JFIELD_I32, false, "height", &World.Length },
-	{ JFIELD_I32, true,  "xSpawn", &LocalPlayer_Instance.Base.Position.X },
-	{ JFIELD_I32, true,  "ySpawn", &LocalPlayer_Instance.Base.Position.Y },
-	{ JFIELD_I32, true,  "zSpawn", &LocalPlayer_Instance.Base.Position.Z },
+	{ JFIELD_I32, true,  "xSpawn", &LocalPlayer_Instances[0].Base.Position.x },
+	{ JFIELD_I32, true,  "ySpawn", &LocalPlayer_Instances[0].Base.Position.y },
+	{ JFIELD_I32, true,  "zSpawn", &LocalPlayer_Instances[0].Base.Position.z },
 	{ JFIELD_ARRAY,0, "blocks" }
 	/* TODO classic only blocks */
 };
@@ -1656,7 +1795,7 @@ static const cc_uint8 cpe_fallback[] = {
 	BLOCK_WOOD, BLOCK_STONE
 };
 
-#define DAT_BUFFER_SIZE (64 * 1024)
+#define DAT_BUFFER_SIZE (32 * 1024)
 static cc_result WriteLevelBlocks(struct Stream* stream) {
 	cc_uint8 buffer[DAT_BUFFER_SIZE];
 	int i, bIndex = 0;
@@ -1715,3 +1854,44 @@ cc_result Dat_Save(struct Stream* stream) {
 	}
 	return 0;
 }
+
+
+/*########################################################################################################################*
+*-------------------------------------------------------Formats component-------------------------------------------------*
+*#########################################################################################################################*/
+static struct MapImporter cw_imp    = { ".cw",      Cw_Load };
+static struct MapImporter dat_imp   = { ".dat",     Dat_Load };
+static struct MapImporter lvl_imp   = { ".lvl",     Lvl_Load };
+static struct MapImporter mine_imp  = { ".mine",    Dat_Load };
+static struct MapImporter fcm_imp   = { ".fcm",     Fcm_Load };
+static struct MapImporter mclvl_imp = { ".mclevel", MCLevel_Load };
+
+static void OnInit(void) {
+	MapImporter_Register(&cw_imp);
+	MapImporter_Register(&dat_imp);
+	MapImporter_Register(&lvl_imp);
+	MapImporter_Register(&mine_imp);
+	MapImporter_Register(&fcm_imp);
+	MapImporter_Register(&mclvl_imp);
+}
+
+static void OnFree(void) {
+	imp_head = NULL;
+}
+#else
+/* No point including map format code when can't save/load maps anyways */
+struct MapImporter* MapImporter_Find(const cc_string* path) { return NULL; }
+cc_result Map_LoadFrom(const cc_string* path) { return ERR_NOT_SUPPORTED; }
+
+cc_result Cw_Save(struct Stream* stream)  { return ERR_NOT_SUPPORTED; }
+cc_result Dat_Save(struct Stream* stream) { return ERR_NOT_SUPPORTED; }
+cc_result Schematic_Save(struct Stream* stream) { return ERR_NOT_SUPPORTED; }
+
+static void OnInit(void) { }
+static void OnFree(void) { }
+#endif
+
+struct IGameComponent Formats_Component = {
+	OnInit, /* Init  */
+	OnFree  /* Free  */
+};

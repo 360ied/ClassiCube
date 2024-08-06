@@ -5,16 +5,12 @@
 #include "Platform.h"
 
 struct _DisplayData DisplayInfo;
-struct _WinData WindowInfo;
+struct cc_window WindowInfo;
 
-#define Display_CentreX(width)  (DisplayInfo.X + (DisplayInfo.Width  - width)  / 2)
-#define Display_CentreY(height) (DisplayInfo.Y + (DisplayInfo.Height - height) / 2)
-
-int Display_ScaleX(int x) { return (int)(x * DisplayInfo.ScaleX); }
-int Display_ScaleY(int y) { return (int)(y * DisplayInfo.ScaleY); }
+#define Display_CentreX(width)  (DisplayInfo.x + (DisplayInfo.Width  - width)  / 2)
+#define Display_CentreY(height) (DisplayInfo.y + (DisplayInfo.Height - height) / 2)
 
 static int cursorPrevX, cursorPrevY;
-static cc_bool cursorVisible = true;
 /* Gets the position of the cursor in screen or window coordinates */
 static void Cursor_GetRawPos(int* x, int* y);
 /* Sets whether the cursor is visible when over this window */
@@ -24,37 +20,41 @@ static void Cursor_DoSetVisible(cc_bool visible);
 
 /* Sets whether the cursor is visible when over this window */
 static void Cursor_SetVisible(cc_bool visible) {
-	if (cursorVisible == visible) return;
-	cursorVisible = visible;
+	if (DisplayInfo.CursorVisible == visible) return;
+	DisplayInfo.CursorVisible = visible;
 	Cursor_DoSetVisible(visible);
 }
 
+static void MoveRawUsingCursorDelta(void) {
+	int x, y;
+	Cursor_GetRawPos(&x, &y);
+	Event_RaiseRawMove(&PointerEvents.RawMoved, x - cursorPrevX, y - cursorPrevY);
+}
+
 static void CentreMousePosition(void) {
-	Cursor_SetPosition(WindowInfo.Width / 2, WindowInfo.Height / 2);
+	Cursor_SetPosition(Window_Main.Width / 2, Window_Main.Height / 2);
 	/* Fixes issues with large DPI displays on Windows >= 8.0. */
 	Cursor_GetRawPos(&cursorPrevX, &cursorPrevY);
 }
 
 static void RegrabMouse(void) {
-	if (!WindowInfo.Focused || !WindowInfo.Exists) return;
+	if (!Window_Main.Focused || !Window_Main.Exists) return;
 	CentreMousePosition();
 }
 
-static void DefaultEnableRawMouse(void) {
-	Input_RawMode = true;
+static CC_INLINE void DefaultEnableRawMouse(void) {
+	Input.RawMode = true;
 	RegrabMouse();
 	Cursor_SetVisible(false);
 }
 
-static void DefaultUpdateRawMouse(void) {
-	int x, y;
-	Cursor_GetRawPos(&x, &y);
-	Event_RaiseRawMove(&PointerEvents.RawMoved, x - cursorPrevX, y - cursorPrevY);
+static CC_INLINE void DefaultUpdateRawMouse(void) {
+	MoveRawUsingCursorDelta();
 	CentreMousePosition();
 }
 
-static void DefaultDisableRawMouse(void) {
-	Input_RawMode = false;
+static CC_INLINE void DefaultDisableRawMouse(void) {
+	Input.RawMode = false;
 	RegrabMouse();
 	Cursor_SetVisible(true);
 }
@@ -63,7 +63,7 @@ static void DefaultDisableRawMouse(void) {
 static void ShowDialogCore(const char* title, const char* msg);
 void Window_ShowDialog(const char* title, const char* msg) {
 	/* Ensure cursor is usable while showing message box */
-	cc_bool rawMode = Input_RawMode;
+	cc_bool rawMode = Input.RawMode;
 
 	if (rawMode) Window_DisableRawMouse();
 	ShowDialogCore(title, msg);
@@ -73,7 +73,7 @@ void Window_ShowDialog(const char* title, const char* msg) {
 
 struct GraphicsMode { int R, G, B, A; };
 /* Creates a GraphicsMode compatible with the default display device */
-static void InitGraphicsMode(struct GraphicsMode* m) {
+static CC_INLINE void InitGraphicsMode(struct GraphicsMode* m) {
 	int bpp = DisplayInfo.Depth;
 	m->A = 0;
 
@@ -99,7 +99,7 @@ static void InitGraphicsMode(struct GraphicsMode* m) {
 }
 
 /* EGL is window system agnostic, other OpenGL context backends are tied to one windowing system */
-#if defined CC_BUILD_GL && defined CC_BUILD_EGL
+#if CC_GFX_BACKEND_IS_GL() && defined CC_BUILD_EGL
 /*########################################################################################################################*
 *-------------------------------------------------------EGL OpenGL--------------------------------------------------------*
 *#########################################################################################################################*/
@@ -110,14 +110,18 @@ static EGLSurface ctx_surface;
 static EGLConfig ctx_config;
 static EGLint ctx_numConfig;
 
+#ifdef CC_BUILD_SWITCH
+static void GLContext_InitSurface(void); // replacement in Window_Switch.c for handheld/docked resolution fix
+#else
 static void GLContext_InitSurface(void) {
-	void* window = WindowInfo.Handle;
+	void* window = Window_Main.Handle.ptr;
 	if (!window) return; /* window not created or lost */
 	ctx_surface = eglCreateWindowSurface(ctx_display, ctx_config, window, NULL);
 
 	if (!ctx_surface) return;
 	eglMakeCurrent(ctx_display, ctx_surface, ctx_surface, ctx_context);
 }
+#endif
 
 static void GLContext_FreeSurface(void) {
 	if (!ctx_surface) return;
@@ -127,7 +131,7 @@ static void GLContext_FreeSurface(void) {
 }
 
 void GLContext_Create(void) {
-#ifdef CC_BUILD_GLMODERN
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
 	static EGLint context_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
 #else
 	static EGLint context_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 1, EGL_NONE };
@@ -140,12 +144,12 @@ void GLContext_Create(void) {
 		EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER,
 		EGL_SURFACE_TYPE,      EGL_WINDOW_BIT,
 
-#if defined CC_BUILD_GLES && defined CC_BUILD_GLMODERN
+#if defined CC_BUILD_GLES && (CC_GFX_BACKEND == CC_GFX_BACKEND_GL2)
 		EGL_RENDERABLE_TYPE,   EGL_OPENGL_ES2_BIT,
 #elif defined CC_BUILD_GLES
 		EGL_RENDERABLE_TYPE,   EGL_OPENGL_ES_BIT,
 #else
-		#error "Can't determine appropriate EGL_RENDERABLE_TYPE"
+		EGL_RENDERABLE_TYPE,   EGL_OPENGL_BIT,
 #endif
 		EGL_NONE
 	};
@@ -203,7 +207,7 @@ cc_bool GLContext_SwapBuffers(void) {
 	return false;
 }
 
-void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
+void GLContext_SetVSync(cc_bool vsync) {
 	eglSwapInterval(ctx_display, vsync);
 }
 void GLContext_GetApiInfo(cc_string* info) { }

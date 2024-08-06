@@ -1,26 +1,28 @@
 #ifndef CC_PACKEDCOL_H
 #define CC_PACKEDCOL_H
 #include "Core.h"
-/* Manipulates a packed 32 bit RGBA colour, in a format suitable for the native 3D graphics API.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+CC_BEGIN_HEADER
+
+/* Manipulates a packed 32 bit RGBA colour, in a format suitable for the native 3D graphics API vertex colours.
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 typedef cc_uint32 PackedCol;
-#if defined CC_BUILD_D3D9
-#define PACKEDCOL_B_SHIFT  0
-#define PACKEDCOL_G_SHIFT  8
-#define PACKEDCOL_R_SHIFT 16
-#define PACKEDCOL_A_SHIFT 24
+#if (CC_GFX_BACKEND == CC_GFX_BACKEND_D3D9) || defined CC_BUILD_XBOX || defined CC_BUILD_DREAMCAST
+	#define PACKEDCOL_B_SHIFT  0
+	#define PACKEDCOL_G_SHIFT  8
+	#define PACKEDCOL_R_SHIFT 16
+	#define PACKEDCOL_A_SHIFT 24
 #elif defined CC_BIG_ENDIAN
-#define PACKEDCOL_R_SHIFT 24
-#define PACKEDCOL_G_SHIFT 16
-#define PACKEDCOL_B_SHIFT  8
-#define PACKEDCOL_A_SHIFT  0
+	#define PACKEDCOL_R_SHIFT 24
+	#define PACKEDCOL_G_SHIFT 16
+	#define PACKEDCOL_B_SHIFT  8
+	#define PACKEDCOL_A_SHIFT  0
 #else
-#define PACKEDCOL_R_SHIFT  0
-#define PACKEDCOL_G_SHIFT  8
-#define PACKEDCOL_B_SHIFT 16
-#define PACKEDCOL_A_SHIFT 24
+	#define PACKEDCOL_R_SHIFT  0
+	#define PACKEDCOL_G_SHIFT  8
+	#define PACKEDCOL_B_SHIFT 16
+	#define PACKEDCOL_A_SHIFT 24
 #endif
 
 #define PACKEDCOL_R_MASK (0xFFU << PACKEDCOL_R_SHIFT)
@@ -48,6 +50,8 @@ CC_API PackedCol PackedCol_Scale(PackedCol value, float t);
 CC_API PackedCol PackedCol_Lerp(PackedCol a, PackedCol b, float t);
 /* Multiplies RGB components of the two given colours. */
 CC_API PackedCol PackedCol_Tint(PackedCol a, PackedCol b);
+/* Adds the two colors together in a way that gives a brighter result. */
+CC_API PackedCol PackedCol_ScreenBlend(PackedCol a, PackedCol b);
 
 CC_NOINLINE int PackedCol_DeHex(char hex);
 CC_NOINLINE cc_bool PackedCol_Unhex(const char* src, int* dst, int count);
@@ -59,4 +63,6 @@ CC_NOINLINE cc_bool PackedCol_TryParseHex(const cc_string* str, cc_uint8* rgb);
 #define PACKEDCOL_SHADE_YMIN 0.5f
 /* Retrieves shaded colours for ambient block face lighting */
 void PackedCol_GetShaded(PackedCol normal, PackedCol* xSide, PackedCol* zSide, PackedCol* yMin);
+
+CC_END_HEADER
 #endif

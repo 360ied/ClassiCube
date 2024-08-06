@@ -1,11 +1,12 @@
 #include "Core.h"
-#if defined CC_BUILD_ANDROID && !defined CC_BUILD_SDL
+#if CC_WIN_BACKEND == CC_WIN_BACKEND_ANDROID
 #include "_WindowBase.h"
 #include "String.h"
 #include "Funcs.h"
 #include "Bitmap.h"
 #include "Errors.h"
 #include "Graphics.h"
+#include "Gui.h"
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <android/keycodes.h>
@@ -20,78 +21,115 @@ static jmethodID JAVA_processedSurfaceDestroyed, JAVA_processEvents;
 static jmethodID JAVA_getDpiX, JAVA_getDpiY, JAVA_setupForGame;
 
 static void RefreshWindowBounds(void) {
-	WindowInfo.Width  = ANativeWindow_getWidth(win_handle);
-	WindowInfo.Height = ANativeWindow_getHeight(win_handle);
-	Platform_Log2("SCREEN BOUNDS: %i,%i", &WindowInfo.Width, &WindowInfo.Height);
+	Window_Main.Width  = ANativeWindow_getWidth(win_handle);
+	Window_Main.Height = ANativeWindow_getHeight(win_handle);
+	Platform_Log2("SCREEN BOUNDS: %i,%i", &Window_Main.Width, &Window_Main.Height);
 	Event_RaiseVoid(&WindowEvents.Resized);
 }
 
+// https://developer.android.com/ndk/reference/group/input
 static int MapNativeKey(int code) {
 	if (code >= AKEYCODE_0  && code <= AKEYCODE_9)   return (code - AKEYCODE_0)  + '0';
 	if (code >= AKEYCODE_A  && code <= AKEYCODE_Z)   return (code - AKEYCODE_A)  + 'A';
-	if (code >= AKEYCODE_F1 && code <= AKEYCODE_F12) return (code - AKEYCODE_F1) + KEY_F1;
-	if (code >= AKEYCODE_NUMPAD_0 && code <= AKEYCODE_NUMPAD_9) return (code - AKEYCODE_NUMPAD_0) + KEY_KP0;
+	if (code >= AKEYCODE_F1 && code <= AKEYCODE_F12) return (code - AKEYCODE_F1) + CCKEY_F1;
+	if (code >= AKEYCODE_NUMPAD_0 && code <= AKEYCODE_NUMPAD_9) return (code - AKEYCODE_NUMPAD_0) + CCKEY_KP0;
 
 	switch (code) {
 		/* TODO: AKEYCODE_STAR */
 		/* TODO: AKEYCODE_POUND */
-	case AKEYCODE_BACK:   return KEY_ESCAPE;
-	case AKEYCODE_COMMA:  return KEY_COMMA;
-	case AKEYCODE_PERIOD: return KEY_PERIOD;
-	case AKEYCODE_ALT_LEFT:    return KEY_LALT;
-	case AKEYCODE_ALT_RIGHT:   return KEY_RALT;
-	case AKEYCODE_SHIFT_LEFT:  return KEY_LSHIFT;
-	case AKEYCODE_SHIFT_RIGHT: return KEY_RSHIFT;
-	case AKEYCODE_TAB:    return KEY_TAB;
-	case AKEYCODE_SPACE:  return KEY_SPACE;
-	case AKEYCODE_ENTER:  return KEY_ENTER;
-	case AKEYCODE_DEL:    return KEY_BACKSPACE;
-	case AKEYCODE_GRAVE:  return KEY_TILDE;
-	case AKEYCODE_MINUS:  return KEY_MINUS;
-	case AKEYCODE_EQUALS: return KEY_EQUALS;
-	case AKEYCODE_LEFT_BRACKET:  return KEY_LBRACKET;
-	case AKEYCODE_RIGHT_BRACKET: return KEY_RBRACKET;
-	case AKEYCODE_BACKSLASH:  return KEY_BACKSLASH;
-	case AKEYCODE_SEMICOLON:  return KEY_SEMICOLON;
-	case AKEYCODE_APOSTROPHE: return KEY_QUOTE;
-	case AKEYCODE_SLASH:      return KEY_SLASH;
+	case AKEYCODE_BACK:   return CCKEY_ESCAPE;
+	case AKEYCODE_COMMA:  return CCKEY_COMMA;
+	case AKEYCODE_PERIOD: return CCKEY_PERIOD;
+	case AKEYCODE_ALT_LEFT:    return CCKEY_LALT;
+	case AKEYCODE_ALT_RIGHT:   return CCKEY_RALT;
+	case AKEYCODE_SHIFT_LEFT:  return CCKEY_LSHIFT;
+	case AKEYCODE_SHIFT_RIGHT: return CCKEY_RSHIFT;
+	case AKEYCODE_TAB:    return CCKEY_TAB;
+	case AKEYCODE_SPACE:  return CCKEY_SPACE;
+	case AKEYCODE_ENTER:  return CCKEY_ENTER;
+	case AKEYCODE_DEL:    return CCKEY_BACKSPACE;
+	case AKEYCODE_GRAVE:  return CCKEY_TILDE;
+	case AKEYCODE_MINUS:  return CCKEY_MINUS;
+	case AKEYCODE_EQUALS: return CCKEY_EQUALS;
+	case AKEYCODE_LEFT_BRACKET:  return CCKEY_LBRACKET;
+	case AKEYCODE_RIGHT_BRACKET: return CCKEY_RBRACKET;
+	case AKEYCODE_BACKSLASH:  return CCKEY_BACKSLASH;
+	case AKEYCODE_SEMICOLON:  return CCKEY_SEMICOLON;
+	case AKEYCODE_APOSTROPHE: return CCKEY_QUOTE;
+	case AKEYCODE_SLASH:      return CCKEY_SLASH;
 		/* TODO: AKEYCODE_AT */
 		/* TODO: AKEYCODE_PLUS */
 		/* TODO: AKEYCODE_MENU */
-	case AKEYCODE_PAGE_UP:     return KEY_PAGEUP;
-	case AKEYCODE_PAGE_DOWN:   return KEY_PAGEDOWN;
-	case AKEYCODE_ESCAPE:      return KEY_ESCAPE;
-	case AKEYCODE_FORWARD_DEL: return KEY_DELETE;
-	case AKEYCODE_CTRL_LEFT:   return KEY_LCTRL;
-	case AKEYCODE_CTRL_RIGHT:  return KEY_RCTRL;
-	case AKEYCODE_CAPS_LOCK:   return KEY_CAPSLOCK;
-	case AKEYCODE_SCROLL_LOCK: return KEY_SCROLLLOCK;
-	case AKEYCODE_META_LEFT:   return KEY_LWIN;
-	case AKEYCODE_META_RIGHT:  return KEY_RWIN;
-	case AKEYCODE_SYSRQ:    return KEY_PRINTSCREEN;
-	case AKEYCODE_BREAK:    return KEY_PAUSE;
-	case AKEYCODE_INSERT:   return KEY_INSERT;
-	case AKEYCODE_NUM_LOCK: return KEY_NUMLOCK;
-	case AKEYCODE_NUMPAD_DIVIDE:   return KEY_KP_DIVIDE;
-	case AKEYCODE_NUMPAD_MULTIPLY: return KEY_KP_MULTIPLY;
-	case AKEYCODE_NUMPAD_SUBTRACT: return KEY_KP_MINUS;
-	case AKEYCODE_NUMPAD_ADD:      return KEY_KP_PLUS;
-	case AKEYCODE_NUMPAD_DOT:      return KEY_KP_DECIMAL;
-	case AKEYCODE_NUMPAD_ENTER:    return KEY_KP_ENTER;
+	case AKEYCODE_PAGE_UP:     return CCKEY_PAGEUP;
+	case AKEYCODE_PAGE_DOWN:   return CCKEY_PAGEDOWN;
+	case AKEYCODE_ESCAPE:      return CCKEY_ESCAPE;
+	case AKEYCODE_FORWARD_DEL: return CCKEY_DELETE;
+	case AKEYCODE_CTRL_LEFT:   return CCKEY_LCTRL;
+	case AKEYCODE_CTRL_RIGHT:  return CCKEY_RCTRL;
+	case AKEYCODE_CAPS_LOCK:   return CCKEY_CAPSLOCK;
+	case AKEYCODE_SCROLL_LOCK: return CCKEY_SCROLLLOCK;
+	case AKEYCODE_META_LEFT:   return CCKEY_LWIN;
+	case AKEYCODE_META_RIGHT:  return CCKEY_RWIN;
+	case AKEYCODE_SYSRQ:    return CCKEY_PRINTSCREEN;
+	case AKEYCODE_BREAK:    return CCKEY_PAUSE;
+	case AKEYCODE_INSERT:   return CCKEY_INSERT;
+	case AKEYCODE_NUM_LOCK: return CCKEY_NUMLOCK;
+	case AKEYCODE_NUMPAD_DIVIDE:   return CCKEY_KP_DIVIDE;
+	case AKEYCODE_NUMPAD_MULTIPLY: return CCKEY_KP_MULTIPLY;
+	case AKEYCODE_NUMPAD_SUBTRACT: return CCKEY_KP_MINUS;
+	case AKEYCODE_NUMPAD_ADD:      return CCKEY_KP_PLUS;
+	case AKEYCODE_NUMPAD_DOT:      return CCKEY_KP_DECIMAL;
+	case AKEYCODE_NUMPAD_ENTER:    return CCKEY_KP_ENTER;
+
+	case AKEYCODE_DPAD_UP:    return CCPAD_UP;
+	case AKEYCODE_DPAD_DOWN:  return CCPAD_DOWN;
+	case AKEYCODE_DPAD_LEFT:  return CCPAD_LEFT;
+	case AKEYCODE_DPAD_RIGHT: return CCPAD_RIGHT;
+
+	case AKEYCODE_BUTTON_A: return CCPAD_1;
+	case AKEYCODE_BUTTON_B: return CCPAD_2;
+	case AKEYCODE_BUTTON_X: return CCPAD_3;
+	case AKEYCODE_BUTTON_Y: return CCPAD_4;
+
+	case AKEYCODE_BUTTON_L1: return CCPAD_L;
+	case AKEYCODE_BUTTON_R1: return CCPAD_R;
+	case AKEYCODE_BUTTON_L2: return CCPAD_ZL;
+	case AKEYCODE_BUTTON_R2: return CCPAD_ZR;
+
+	case AKEYCODE_BUTTON_START:  return CCPAD_START;
+	case AKEYCODE_BUTTON_SELECT: return CCPAD_SELECT;
+	case AKEYCODE_BUTTON_THUMBL: return CCPAD_LSTICK;
+	case AKEYCODE_BUTTON_THUMBR: return CCPAD_RSTICK;
 	}
-	return KEY_NONE;
+	return INPUT_NONE;
 }
 
 static void JNICALL java_processKeyDown(JNIEnv* env, jobject o, jint code) {
 	int key = MapNativeKey(code);
 	Platform_Log2("KEY - DOWN %i,%i", &code, &key);
-	if (key) Input_SetPressed(key);
+
+	if (Input_IsPadButton(key)) {
+		Input.Sources |= INPUT_SOURCE_GAMEPAD;
+		
+		int port = Gamepad_Connect(0xAD01D, PadBind_Defaults);
+		Gamepad_SetButton(port, key, true);
+	} else {
+		if (key) Input_SetPressed(key);
+	}
 }
 
 static void JNICALL java_processKeyUp(JNIEnv* env, jobject o, jint code) {
 	int key = MapNativeKey(code);
 	Platform_Log2("KEY - UP %i,%i", &code, &key);
-	if (key) Input_SetReleased(key);
+
+	if (Input_IsPadButton(key)) {
+		Input.Sources |= INPUT_SOURCE_GAMEPAD;
+		
+		int port = Gamepad_Connect(0xAD01D, PadBind_Defaults);
+		Gamepad_SetButton(port, key, false);
+	} else {
+		if (key) Input_SetReleased(key);
+	}
 }
 
 static void JNICALL java_processKeyChar(JNIEnv* env, jobject o, jint code) {
@@ -122,11 +160,22 @@ static void JNICALL java_processPointerMove(JNIEnv* env, jobject o, jint id, jin
 	Input_UpdateTouch(id, x, y);
 }
 
+static void JNICALL java_processJoystickL(JNIEnv* env, jobject o, jint x, jint y) {
+	int port = Gamepad_Connect(0xAD01D, PadBind_Defaults);
+	Gamepad_SetAxis(port, PAD_AXIS_LEFT,  x / 4096.0f, y / 4096.0f, 1.0f / 60);
+}
+
+static void JNICALL java_processJoystickR(JNIEnv* env, jobject o, jint x, jint y) {
+	int port = Gamepad_Connect(0xAD01D, PadBind_Defaults);
+	Gamepad_SetAxis(port, PAD_AXIS_RIGHT, x / 4096.0f, y / 4096.0f, 1.0f / 60);
+}
+
 static void JNICALL java_processSurfaceCreated(JNIEnv* env, jobject o, jobject surface) {
 	Platform_LogConst("WIN - CREATED");
 	win_handle        = ANativeWindow_fromSurface(env, surface);
 	winCreated        = true;
-	WindowInfo.Handle = win_handle;
+
+	Window_Main.Handle.ptr = win_handle;
 	RefreshWindowBounds();
 	/* TODO: Restore context */
 	Event_RaiseVoid(&WindowEvents.Created);
@@ -136,8 +185,9 @@ static void JNICALL java_processSurfaceDestroyed(JNIEnv* env, jobject o) {
 	Platform_LogConst("WIN - DESTROYED");
 	if (win_handle) ANativeWindow_release(win_handle);
 
-	win_handle        = NULL;
-	WindowInfo.Handle = NULL;
+	win_handle             = NULL;
+	Window_Main.Handle.ptr = NULL;
+
 	/* eglSwapBuffers might return EGL_BAD_SURFACE, EGL_BAD_ALLOC, or some other error */
 	/* Instead the context is lost here in a consistent manner */
 	if (Gfx.Created) Gfx_LoseContext("surface lost");
@@ -175,20 +225,20 @@ static void JNICALL java_onPause(JNIEnv* env, jobject o) {
 static void JNICALL java_onDestroy(JNIEnv* env, jobject o) {
 	Platform_LogConst("APP - ON DESTROY");
 
-	if (WindowInfo.Exists) Window_Close();
+	if (Window_Main.Exists) Window_RequestClose();
 	/* TODO: signal to java code we're done */
 	/* JavaICall_Void(env, JAVA_processedDestroyed", NULL); */
 }
 
 static void JNICALL java_onGotFocus(JNIEnv* env, jobject o) {
 	Platform_LogConst("APP - GOT FOCUS");
-	WindowInfo.Focused = true;
+	Window_Main.Focused = true;
 	Event_RaiseVoid(&WindowEvents.FocusChanged);
 }
 
 static void JNICALL java_onLostFocus(JNIEnv* env, jobject o) {
 	Platform_LogConst("APP - LOST FOCUS");
-	WindowInfo.Focused = false;
+	Window_Main.Focused = false;
 	Event_RaiseVoid(&WindowEvents.FocusChanged);
 	/* TODO: Disable rendering? */
 }
@@ -209,6 +259,9 @@ static const JNINativeMethod methods[] = {
 	{ "processPointerDown", "(IIII)V", java_processPointerDown },
 	{ "processPointerUp",   "(IIII)V", java_processPointerUp },
 	{ "processPointerMove", "(IIII)V", java_processPointerMove },
+
+	{ "processJoystickL", "(II)V", java_processJoystickL },
+	{ "processJoystickR", "(II)V", java_processJoystickR },
 
 	{ "processSurfaceCreated",      "(Landroid/view/Surface;)V",  java_processSurfaceCreated },
 	{ "processSurfaceDestroyed",    "()V",                        java_processSurfaceDestroyed },
@@ -249,6 +302,10 @@ static void CacheMethodRefs(JNIEnv* env) {
 	JAVA_saveFileDialog = JavaGetIMethod(env, "saveFileDialog", "(Ljava/lang/String;Ljava/lang/String;)I");
 }
 
+void Window_PreInit(void) { 
+	DisplayInfo.CursorVisible = true;
+}
+
 // TODO move to bottom of file?
 void Window_Init(void) {
 	JNIEnv* env;
@@ -257,13 +314,17 @@ void Window_Init(void) {
 	JavaRegisterNatives(env, methods);
 	CacheMethodRefs(env);
 
-	WindowInfo.SoftKeyboard = SOFT_KEYBOARD_RESIZE;
+	Window_Main.SoftKeyboard = SOFT_KEYBOARD_RESIZE;
 	Input_SetTouchMode(true);
+	Gui_SetTouchUI(true);
+	Input.Sources = INPUT_SOURCE_NORMAL;
 
 	DisplayInfo.Depth  = 32;
 	DisplayInfo.ScaleX = JavaICall_Float(env, JAVA_getDpiX, NULL);
 	DisplayInfo.ScaleY = JavaICall_Float(env, JAVA_getDpiY, NULL);
 }
+
+void Window_Free(void) { }
 
 static void RemakeWindowSurface(void) {
 	JNIEnv* env;
@@ -278,7 +339,7 @@ static void RemakeWindowSurface(void) {
 	/* Loop until window gets created by main UI thread */
 	/* (i.e. until processSurfaceCreated is received) */
 	while (!winCreated) {
-		Window_ProcessEvents();
+		Window_ProcessEvents(0.01f);
 		Thread_Sleep(10);
 	}
 
@@ -286,13 +347,19 @@ static void RemakeWindowSurface(void) {
 }
 
 static void DoCreateWindow(void) {
-	WindowInfo.Exists = true;
+	Window_Main.Exists   = true;
+	Window_Main.UIScaleX = DEFAULT_UI_SCALE_X;
+	Window_Main.UIScaleY = DEFAULT_UI_SCALE_Y;
+	
+	Window_Main.SoftKeyboardInstant = true;
 	RemakeWindowSurface();
 	/* always start as fullscreen */
 	Window_EnterFullscreen();
 }
 void Window_Create2D(int width, int height) { DoCreateWindow(); }
 void Window_Create3D(int width, int height) { DoCreateWindow(); }
+
+void Window_Destroy(void) { }
 
 void Window_SetTitle(const cc_string* title) {
 	/* TODO: Implement this somehow */
@@ -331,19 +398,25 @@ int Window_IsObscured(void) { return 0; }
 void Window_Show(void) { } /* Window already visible */
 void Window_SetSize(int width, int height) { }
 
-void Window_Close(void) {
-	WindowInfo.Exists = false;
+void Window_RequestClose(void) {
+	Window_Main.Exists = false;
 	Event_RaiseVoid(&WindowEvents.Closing);
 	/* TODO: Do we need to call finish here */
 	/* ANativeActivity_finish(app->activity); */
 }
 
-void Window_ProcessEvents(void) {
+void Window_ProcessEvents(float delta) {
 	JNIEnv* env;
 	JavaGetCurrentEnv(env);
 	/* TODO: Cache the java env */
 	JavaICall_Void(env, JAVA_processEvents, NULL);
 }
+
+void Gamepads_Init(void) {
+
+}
+
+void Gamepads_Process(float delta) { }
 
 /* No actual mouse cursor */
 static void Cursor_GetRawPos(int* x, int* y) { *x = 0; *y = 0; }
@@ -358,7 +431,7 @@ static void ShowDialogCore(const char* title, const char* msg) {
 	Platform_LogConst(title);
 	Platform_LogConst(msg);
 	/* in case surface destroyed message has arrived */
-	Window_ProcessEvents();
+	Window_ProcessEvents(0.0);
 
 	args[0].l = JavaMakeConst(env, title);
 	args[1].l = JavaMakeConst(env, msg);
@@ -408,12 +481,11 @@ cc_result Window_SaveFileDialog(const struct SaveFileDialogArgs* save_args) {
     if (!save_args->defaultName.length) return SFD_ERR_NEED_DEFAULT_NAME;
 
     // save the item to a temp file, which is then (usually) later deleted by intent callback
-    cc_string tmpDir = String_FromConst("Exported");
-    Directory_Create(&tmpDir);
+    Directory_Create(FILEPATH_RAW("Exported"));
 
     cc_string path; char pathBuffer[FILENAME_SIZE];
     String_InitArray(path, pathBuffer);
-    String_Format3(&path, "%s/%s%c", &tmpDir, &save_args->defaultName, save_args->filters[0]);
+    String_Format2(&path, "Exported/%s%c", &save_args->defaultName, save_args->filters[0]);
     save_args->Callback(&path);
     // TODO kinda ugly, maybe a better way?
     cc_string file = String_UNSAFE_SubstringAt(&path, String_IndexOf(&path, '/') + 1);
@@ -427,13 +499,13 @@ cc_result Window_SaveFileDialog(const struct SaveFileDialogArgs* save_args) {
     return OK ? 0 : ERR_INVALID_ARGUMENT;
 }
 
-static struct Bitmap fb_bmp;
-void Window_AllocFramebuffer(struct Bitmap* bmp) {
-	bmp->scan0 = (BitmapCol*)Mem_Alloc(bmp->width * bmp->height, 4, "window pixels");
-	fb_bmp     = *bmp;
+void Window_AllocFramebuffer(struct Bitmap* bmp, int width, int height) {
+	bmp->scan0  = (BitmapCol*)Mem_Alloc(width * height, BITMAPCOLOR_SIZE, "window pixels");
+	bmp->width  = width;
+	bmp->height = height;
 }
 
-void Window_DrawFramebuffer(Rect2D r) {
+void Window_DrawFramebuffer(Rect2D r, struct Bitmap* bmp) {
 	ANativeWindow_Buffer buffer;
 	cc_uint32* src;
 	cc_uint32* dst;
@@ -442,8 +514,8 @@ void Window_DrawFramebuffer(Rect2D r) {
 
 	/* window not created yet */
 	if (!win_handle) return;
-	b.left = r.X; b.right  = r.X + r.Width;
-	b.top  = r.Y; b.bottom = r.Y + r.Height;
+	b.left = r.x; b.right  = r.x + r.width;
+	b.top  = r.y; b.bottom = r.y + r.height;
 
 	/* Platform_Log4("DIRTY: %i,%i - %i,%i", &b.left, &b.top, &b.right, &b.bottom); */
 	res  = ANativeWindow_lock(win_handle, &buffer, &b);
@@ -453,15 +525,16 @@ void Window_DrawFramebuffer(Rect2D r) {
 	/* In some rare cases, the returned locked region will be entire area of the surface */
 	/* This can cause a crash if the surface has been resized (i.e. device rotated), */
 	/* but the framebuffer has not been resized yet. So always constrain bounds. */
-	b.left = min(b.left, fb_bmp.width);  b.right  = min(b.right,  fb_bmp.width);
-	b.top  = min(b.top,  fb_bmp.height); b.bottom = min(b.bottom, fb_bmp.height);
+	b.left = min(b.left, bmp->width);  b.right  = min(b.right,  bmp->width);
+	b.top  = min(b.top,  bmp->height); b.bottom = min(b.bottom, bmp->height);
 
-	src  = (cc_uint32*)fb_bmp.scan0 + b.left;
-	dst  = (cc_uint32*)buffer.bits  + b.left;
+	src  = (cc_uint32*)bmp->scan0  + b.left;
+	dst  = (cc_uint32*)buffer.bits + b.left;
 	size = (b.right - b.left) * 4;
 
-	for (y = b.top; y < b.bottom; y++) {
-		Mem_Copy(dst + y * buffer.stride, src + y * fb_bmp.width, size);
+	for (y = b.top; y < b.bottom; y++) 
+	{
+		Mem_Copy(dst + y * buffer.stride, src + y * bmp->width, size);
 	}
 	res = ANativeWindow_unlockAndPost(win_handle);
 	if (res) Logger_Abort2(res, "Unlocking window pixels");
@@ -471,10 +544,11 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	Mem_Free(bmp->scan0);
 }
 
-void Window_OpenKeyboard(struct OpenKeyboardArgs* kArgs) {
+void OnscreenKeyboard_Open(struct OpenKeyboardArgs* kArgs) {
 	JNIEnv* env;
 	jvalue args[2];
 	JavaGetCurrentEnv(env);
+	DisplayInfo.ShowingSoftKeyboard = true;
 
 	args[0].l = JavaMakeString(env, kArgs->text);
 	args[1].i = kArgs->type;
@@ -482,7 +556,7 @@ void Window_OpenKeyboard(struct OpenKeyboardArgs* kArgs) {
 	(*env)->DeleteLocalRef(env, args[0].l);
 }
 
-void Window_SetKeyboardText(const cc_string* text) {
+void OnscreenKeyboard_SetText(const cc_string* text) {
 	JNIEnv* env;
 	jvalue args[1];
 	JavaGetCurrentEnv(env);
@@ -492,9 +566,11 @@ void Window_SetKeyboardText(const cc_string* text) {
 	(*env)->DeleteLocalRef(env, args[0].l);
 }
 
-void Window_CloseKeyboard(void) {
+void OnscreenKeyboard_Close(void) {
 	JNIEnv* env;
 	JavaGetCurrentEnv(env);
+	DisplayInfo.ShowingSoftKeyboard = false;
+
 	JavaICall_Void(env, JAVA_closeKeyboard, NULL);
 }
 

@@ -2,24 +2,36 @@
 #define CC_MAP_GEN_H
 #include "ExtMath.h"
 #include "Vectors.h"
+CC_BEGIN_HEADER
+
 /* Implements flatgrass map generator, and original classic vanilla map generation (with perlin noise)
-   Based on: https://github.com/UnknownShadow200/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
+   Based on: https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
    Thanks to Jerralish for originally reverse engineering classic's algorithm, then preparing a high level overview of the algorithm.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 /* Progress between 0 and 1 for the current step */
 extern volatile float Gen_CurrentProgress;
 /* Name of the current step being performed */
 extern volatile const char* Gen_CurrentState;
-/* Whether map generation has completed */
-extern volatile cc_bool Gen_Done;
 extern int Gen_Seed;
-extern cc_bool Gen_Vanilla;
 extern BlockRaw* Gen_Blocks;
 
-void FlatgrassGen_Generate(void);
-void NotchyGen_Generate(void);
+/* Starts generating a map using the Gen_Active generator */
+void Gen_Start(void);
+/* Checks whether the map generator has completed yet */
+cc_bool Gen_IsDone(void);
+
+
+struct MapGenerator {
+	cc_bool (*Prepare)(void);
+	void   (*Generate)(void);
+};
+
+extern const struct MapGenerator* Gen_Active;
+extern const struct MapGenerator FlatgrassGen;
+extern const struct MapGenerator NotchyGen;
+
 
 extern BlockRaw* Tree_Blocks;
 extern RNGState* Tree_Rnd;
@@ -31,4 +43,6 @@ cc_bool TreeGen_CanGrow(int treeX, int treeY, int treeZ, int treeHeight);
 /* Generates the blocks (and their positions in the world) that actually make up a tree. */
 /* Returns the number of blocks generated, which will be <= TREE_MAX_COUNT */
 int  TreeGen_Grow(int treeX, int treeY, int treeZ, int height, IVec3* coords, BlockRaw* blocks);
+
+CC_END_HEADER
 #endif

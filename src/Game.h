@@ -1,12 +1,16 @@
 #ifndef CC_GAME_H
 #define CC_GAME_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* Represents the game and related structures.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 struct Bitmap;
 struct Stream;
+typedef void (*Game_Draw2DHook)(float delta);
+
 CC_VAR extern struct _GameData {
 	/* Width and height of the window. (1 at minimum) */
 	int Width, Height;
@@ -14,17 +18,34 @@ CC_VAR extern struct _GameData {
 	double Time;
 	/* Number of chunks updated within last second. Resets to 0 after every second. */
 	int ChunkUpdates;
+	/* Index of current game state being used (for splitscreen multiplayer) */
+	int CurrentState;
+	Game_Draw2DHook Draw2DHooks[4];
 } Game;
 
-/* Stopwatch measurement of when current frame started */
-extern cc_uint64 Game_FrameStart;
 extern struct RayTracer Game_SelectedPos;
 extern cc_bool Game_UseCPEBlocks;
 
 extern cc_string Game_Username;
 extern cc_string Game_Mppass;
 
+#ifdef CC_BUILD_SPLITSCREEN
+	int Game_MapState(int deviceIndex);
+	extern int Game_NumStates;
+#else
+	static CC_INLINE int Game_MapState(int deviceIndex) { return 0; }
+	#define Game_NumStates 1
+#endif
+
+#if defined CC_BUILD_N64
+    #define DEFAULT_VIEWDIST 20
+#elif defined CC_BUILD_NDS || defined CC_BUILD_PS1 || defined CC_BUILD_SATURN
+    #define DEFAULT_VIEWDIST 192
+#else
+    #define DEFAULT_VIEWDIST 512
+#endif
 #define DEFAULT_MAX_VIEWDIST 32768
+
 extern int Game_ViewDistance;
 extern int Game_MaxViewDistance;
 extern int Game_UserViewDistance;
@@ -38,25 +59,26 @@ extern cc_bool Game_ClassicMode;
 extern cc_bool Game_ClassicHacks;
 #define Game_PureClassic (Game_ClassicMode && !Game_ClassicHacks)
 extern cc_bool Game_AllowCustomBlocks;
-extern cc_bool Game_UseCPE;
 extern cc_bool Game_AllowServerTextures;
 
+extern cc_bool Game_Anaglyph3D;
 extern cc_bool Game_ViewBobbing;
 extern cc_bool Game_BreakableLiquids;
 /* Whether a screenshot should be taken at the end of this frame */
 extern cc_bool Game_ScreenshotRequested;
 extern cc_bool Game_HideGui;
-extern cc_bool Game_DefaultZipMissing;
 
 enum GAME_VERSION_ {
 	VERSION_0017 = 27, VERSION_0019 = 28, VERSION_0023 = 29, VERSION_0030 = 30, VERSION_CPE = 31
 };
-struct GameVersion { 
-	const char* Name; 
-	cc_uint8 Version, Protocol, MaxBlock;
+struct GameVersion {
+	const char* Name;
+	cc_bool HasCPE;
+	cc_uint8 Version, Protocol, MaxCoreBlock;
 	cc_uint8 BlocksPerRow, InventorySize;
 	const cc_uint8* Inventory; 
 	const cc_uint8* Hotbar;
+	const char* DefaultTexpack;
 };
 extern struct GameVersion Game_Version;
 extern void GameVersion_Load(void);
@@ -86,15 +108,21 @@ CC_API void Game_UpdateBlock(int x, int y, int z, BlockID block);
 CC_API void Game_ChangeBlock(int x, int y, int z, BlockID block);
 
 cc_bool Game_CanPick(BlockID block);
-cc_bool Game_UpdateTexture(GfxResourceID* texId, struct Stream* src, const cc_string* file, cc_uint8* skinType);
-/* Checks that the given bitmap can be loaded into a native gfx texture. */
-/* (must be power of two size and be <= Gfx_MaxTexWidth/Gfx_MaxHeight) */
-cc_bool Game_ValidateBitmap(const cc_string* file, struct Bitmap* bmp);
 /* Updates Game_Width and Game_Height. */
 void Game_UpdateDimensions(void);
 /* Sets the strategy/method used to limit frames per second. */
 /* See FPS_LIMIT_ for valid strategies/methods */
 void Game_SetFpsLimit(int method);
+void Game_SetMinFrameTime(float frameTimeMS);
+
+cc_bool Game_UpdateTexture(GfxResourceID* texId, struct Stream* src, const cc_string* file, 
+							cc_uint8* skinType, int* heightDivisor);
+/* Checks that the given bitmap can be loaded into a native gfx texture. */
+/* (must be power of two size and be <= Gfx_MaxTexWidth/Gfx_MaxHeight) */
+cc_bool Game_ValidateBitmap(const cc_string* file, struct Bitmap* bmp);
+/* Checks that the given bitmap is a power of two size */
+/*   NOTE: Game_ValidateBitmap should nearly always be used instead of this */
+cc_bool Game_ValidateBitmapPow2(const cc_string* file, struct Bitmap* bmp);
 
 /* Runs the main game loop until the window is closed. */
 void Game_Run(int width, int height, const cc_string* title);
@@ -134,4 +162,6 @@ struct ScheduledTask {
 typedef void (*ScheduledTaskCallback)(struct ScheduledTask* task);
 /* Adds a task to list of scheduled tasks. (always at end) */
 CC_API int ScheduledTask_Add(double interval, ScheduledTaskCallback callback);
+
+CC_END_HEADER
 #endif

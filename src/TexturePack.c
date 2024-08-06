@@ -17,6 +17,48 @@
 #include "Chat.h" /* TODO avoid this include */
 #include "Errors.h"
 
+/* Simple fallback terrain for when no texture packs are available at all */
+static BitmapCol fallback_terrain[16 * 8] = {
+	BitmapColor_RGB( 96, 144,  85), BitmapColor_RGB(129, 128, 127), BitmapColor_RGB(123,  87,  66), BitmapColor_RGB(174, 124,  74), BitmapColor_RGB(184, 151, 105), BitmapColor_RGB(200, 200, 197), BitmapColor_RGB(175, 173, 173), BitmapColor_RGB(153, 101,  75), 
+	BitmapColor_RGB(118, 111, 101), BitmapColor_RGB( 61,  20,  11), BitmapColor_RGB(179,  67,  23), BitmapColor_RGB(154, 128,  89), BitmapColor_RGB(163,   2,  29), BitmapColor_RGB(203, 206,   2), BitmapCol_Make(86,144,216,128), BitmapColor_RGB( 38,  88,  41),
+	/* 16*/
+	BitmapColor_RGB(165, 163, 159), BitmapColor_RGB( 37,  48,  61), BitmapColor_RGB(227, 223, 151), BitmapColor_RGB(160, 152, 147), BitmapColor_RGB( 90,  71,  58), BitmapColor_RGB(173, 135,  87), BitmapColor_RGB( 38,  98,  37), BitmapColor_RGB(225, 229, 235), 
+	BitmapColor_RGB(246, 231,  23), BitmapColor_RGB(225, 218, 157), BitmapColor_RGB(247, 243, 234), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB(226,  18,  18), BitmapColor_RGB(172, 131, 101), BitmapColor_RGB(255, 122,  31), BitmapColor_RGB( 79, 120,  79),
+	/* 32 */
+	BitmapColor_RGB(129, 128, 127), BitmapColor_RGB(189, 151, 134), BitmapColor_RGB( 53,  44,  61), BitmapColor_RGB(180, 151, 102), BitmapColor_RGB(165, 163, 159), BitmapColor_RGB( 20,  20,  33), BitmapColor_RGB(243, 139,  28), BitmapColor_RGB(193, 197, 202), 
+	BitmapColor_RGB(235, 188,  32), BitmapColor_RGB(203, 193, 135), BitmapColor_RGB(224, 220, 212), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB(174, 124,  74),
+	/* 48 */
+	BitmapColor_RGB(175, 148,  43), BitmapColor_RGB(188, 225, 231), BitmapColor_RGB(238, 245, 245), BitmapCol_Make(205,232,252,128),BitmapColor_RGB(153, 150, 149), BitmapColor_RGB(105,  80,  54), BitmapColor_RGB(236, 236, 240), BitmapColor_RGB(161, 165, 170),
+	BitmapColor_RGB(225, 146,  30), BitmapColor_RGB(203, 193, 135), BitmapColor_RGB(247, 243, 234), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158),
+	/* 64 */
+	BitmapColor_RGB(217,  35,  35), BitmapColor_RGB(219, 137,  13), BitmapColor_RGB(224, 224,   0), BitmapColor_RGB(128, 221,   2), BitmapColor_RGB( 13, 217,  13), BitmapColor_RGB(  8, 218, 133), BitmapColor_RGB(  4, 219, 219), BitmapColor_RGB( 89, 175, 219),
+	BitmapColor_RGB(122, 122, 217), BitmapColor_RGB(131,  39, 225), BitmapColor_RGB(178,  69, 230), BitmapColor_RGB(227,  52, 227), BitmapColor_RGB(227,  41, 133), BitmapColor_RGB( 73,  73,  73), BitmapColor_RGB(151, 151, 151), BitmapColor_RGB(227, 227, 227),
+	/* 80 */
+	BitmapColor_RGB(220, 127, 162), BitmapColor_RGB( 42,  66,   8), BitmapColor_RGB( 75,  37,  11), BitmapColor_RGB( 24,  37, 149), BitmapColor_RGB( 29, 113, 149), BitmapColor_RGB(155, 161, 174), BitmapColor_RGB(167,  41,  13), BitmapColor_RGB( 57, 115, 158), 
+	BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158),
+	/* 96 */
+	BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), 
+	BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134),
+	/* 112 */
+	BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), 
+	BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158), BitmapColor_RGB( 52,  90, 134), BitmapColor_RGB( 57, 115, 158),
+};
+
+static void LoadFallbackAtlas(void) {
+	struct Bitmap bmp, src;
+	src.width  = 16;
+	src.height = 8;
+	src.scan0  = fallback_terrain;
+	
+	if (Gfx.MinTexWidth || Gfx.MinTexHeight) {
+		Bitmap_Allocate(&bmp, 16 * Gfx.MinTexWidth, 8 * Gfx.MinTexHeight);
+		Bitmap_Scale(&bmp, &src, 0, 0, 16, 8);
+		Atlas_TryChange(&bmp);
+	} else {
+		Atlas_TryChange(&src);
+	}
+}
+
 /*########################################################################################################################*
 *------------------------------------------------------TerrainAtlas-------------------------------------------------------*
 *#########################################################################################################################*/
@@ -30,11 +72,59 @@ TextureRec Atlas1D_TexRec(TextureLoc texLoc, int uCount, int* index) {
 	*index = Atlas1D_Index(texLoc);
 
 	/* Adjust coords to be slightly inside - fixes issues with AMD/ATI cards */	
-	rec.U1 = 0.0f; 
-	rec.V1 = y * Atlas1D.InvTileSize;
-	rec.U2 = (uCount - 1) + UV2_Scale;
-	rec.V2 = rec.V1       + UV2_Scale * Atlas1D.InvTileSize;
+	rec.u1 = 0.0f; 
+	rec.v1 = y * Atlas1D.InvTileSize;
+	rec.u2 = (uCount - 1) + UV2_Scale;
+	rec.v2 = rec.v1       + UV2_Scale * Atlas1D.InvTileSize;
 	return rec;
+}
+
+
+static void Atlas1D_Load(int index, struct Bitmap* atlas1D) {
+	int tileSize      = Atlas2D.TileSize;
+	int tilesPerAtlas = Atlas1D.TilesPerAtlas;
+	int y, tile = index * tilesPerAtlas;
+	int atlasX, atlasY;
+	
+	for (y = 0; y < tilesPerAtlas; y++, tile++) 
+	{
+		atlasX = Atlas2D_TileX(tile) * tileSize;
+		atlasY = Atlas2D_TileY(tile) * tileSize;
+
+		Bitmap_UNSAFE_CopyBlock(atlasX, atlasY, 0, y * tileSize,
+							&Atlas2D.Bmp, atlas1D, tileSize);
+	}
+	Gfx_RecreateTexture(&Atlas1D.TexIds[index], atlas1D, TEXTURE_FLAG_MANAGED | TEXTURE_FLAG_DYNAMIC, Gfx.Mipmaps);
+}
+
+/* TODO: always do this? */
+#ifdef CC_BUILD_LOWMEM
+static void Atlas1D_LoadBlock(int index) {
+	int tileSize      = Atlas2D.TileSize;
+	int tilesPerAtlas = Atlas1D.TilesPerAtlas;
+	struct Bitmap atlas1D;
+
+	Platform_Log2("Lazy load atlas #%i (%i per bmp)", &index, &tilesPerAtlas);
+	Bitmap_Allocate(&atlas1D, tileSize, tilesPerAtlas * tileSize);
+	
+	Atlas1D_Load(index, &atlas1D);
+	Mem_Free(atlas1D.scan0);
+}
+
+void Atlas1D_Bind(int index) {
+	if (index < Atlas1D.Count && !Atlas1D.TexIds[index])
+		Atlas1D_LoadBlock(index);
+	Gfx_BindTexture(Atlas1D.TexIds[index]);
+}
+
+static void Atlas_Convert2DTo1D(void) {
+	int tilesPerAtlas = Atlas1D.TilesPerAtlas;
+	int atlasesCount  = Atlas1D.Count;
+	Platform_Log2("Terrain atlas: %i bmps, %i per bmp", &atlasesCount, &tilesPerAtlas);
+}
+#else
+void Atlas1D_Bind(int index) {
+	Gfx_BindTexture(Atlas1D.TexIds[index]);
 }
 
 static void Atlas_Convert2DTo1D(void) {
@@ -42,29 +132,31 @@ static void Atlas_Convert2DTo1D(void) {
 	int tilesPerAtlas = Atlas1D.TilesPerAtlas;
 	int atlasesCount  = Atlas1D.Count;
 	struct Bitmap atlas1D;
-	int atlasX, atlasY;
-	int tile = 0, i, y;
+	int tile = 0, i;
 
 	Platform_Log2("Loaded terrain atlas: %i bmps, %i per bmp", &atlasesCount, &tilesPerAtlas);
 	Bitmap_Allocate(&atlas1D, tileSize, tilesPerAtlas * tileSize);
 	
-	for (i = 0; i < atlasesCount; i++) {
-		for (y = 0; y < tilesPerAtlas; y++, tile++) {
-			atlasX = Atlas2D_TileX(tile) * tileSize;
-			atlasY = Atlas2D_TileY(tile) * tileSize;
-
-			Bitmap_UNSAFE_CopyBlock(atlasX, atlasY, 0, y * tileSize,
-								&Atlas2D.Bmp, &atlas1D, tileSize);
-		}
-		Gfx_RecreateTexture(&Atlas1D.TexIds[i], &atlas1D, TEXTURE_FLAG_MANAGED | TEXTURE_FLAG_DYNAMIC, Gfx.Mipmaps);
+	for (i = 0; i < atlasesCount; i++) 
+	{
+		Atlas1D_Load(i, &atlas1D);
 	}
 	Mem_Free(atlas1D.scan0);
 }
+#endif
 
 static void Atlas_Update1D(void) {
 	int maxAtlasHeight, maxTilesPerAtlas, maxTiles;
+	int maxTexHeight = Gfx.MaxTexHeight;
 
-	maxAtlasHeight   = min(4096, Gfx.MaxTexHeight);
+	/* E.g. a graphics backend may support textures up to 256 x 256 */
+	/*   dimension wise, but only have enough storage for 16 x 256 */
+	if (Gfx.MaxTexSize) {
+		int maxCurHeight = Gfx.MaxTexSize / Atlas2D.TileSize;
+		maxTexHeight     = min(maxTexHeight, maxCurHeight);
+	}
+
+	maxAtlasHeight   = min(4096, maxTexHeight);
 	maxTilesPerAtlas = maxAtlasHeight / Atlas2D.TileSize;
 	maxTiles         = Atlas2D.RowsCount * ATLAS2D_TILES_PER_ROW;
 
@@ -73,7 +165,7 @@ static void Atlas_Update1D(void) {
 
 	Atlas1D.InvTileSize = 1.0f / Atlas1D.TilesPerAtlas;
 	Atlas1D.Mask  = Atlas1D.TilesPerAtlas - 1;
-	Atlas1D.Shift = Math_Log2(Atlas1D.TilesPerAtlas);
+	Atlas1D.Shift = Math_ilog2(Atlas1D.TilesPerAtlas);
 }
 
 /* Loads the given atlas and converts it into an array of 1D atlases. */
@@ -87,35 +179,23 @@ static void Atlas_Update(struct Bitmap* bmp) {
 	Atlas_Convert2DTo1D();
 }
 
-static GfxResourceID Atlas_LoadTile_Raw(TextureLoc texLoc, struct Bitmap* element) {
+GfxResourceID Atlas2D_LoadTile(TextureLoc texLoc) {
 	int size = Atlas2D.TileSize;
+	struct Bitmap tile;
+
 	int x = Atlas2D_TileX(texLoc), y = Atlas2D_TileY(texLoc);
 	if (y >= Atlas2D.RowsCount) return 0;
 
-	Bitmap_UNSAFE_CopyBlock(x * size, y * size, 0, 0, &Atlas2D.Bmp, element, size);
-	return Gfx_CreateTexture(element, 0, Gfx.Mipmaps);
-}
-
-GfxResourceID Atlas2D_LoadTile(TextureLoc texLoc) {
-	BitmapCol pixels[64 * 64];
-	int size = Atlas2D.TileSize;
-	struct Bitmap tile;
-	GfxResourceID texId;
-
-	/* Try to allocate bitmap on stack if possible */
-	if (size > 64) {
-		Bitmap_Allocate(&tile, size, size);
-		texId = Atlas_LoadTile_Raw(texLoc, &tile);
-		Mem_Free(tile.scan0);
-		return texId;
-	} else {	
-		Bitmap_Init(tile, size, size, pixels);
-		return Atlas_LoadTile_Raw(texLoc, &tile);
-	}
+	tile.scan0  = Bitmap_GetRow(&Atlas2D.Bmp, y * size) + (x * size);
+	tile.width  = size;
+	tile.height = size;
+	return Gfx_CreateTexture2(&tile, Atlas2D.Bmp.width, 0, Gfx.Mipmaps);
 }
 
 static void Atlas2D_Free(void) {
-	Mem_Free(Atlas2D.Bmp.scan0);
+	if (Atlas2D.Bmp.scan0 != fallback_terrain)
+		Mem_Free(Atlas2D.Bmp.scan0);
+
 	Atlas2D.Bmp.scan0 = NULL;
 	Atlas2D.RowsCount = 0;
 }
@@ -129,17 +209,39 @@ static void Atlas1D_Free(void) {
 
 cc_bool Atlas_TryChange(struct Bitmap* atlas) {
 	static const cc_string terrain = String_FromConst("terrain.png");
-	if (!Game_ValidateBitmap(&terrain, atlas)) return false;
+	int tileSize;
 
-	if (atlas->height < atlas->width) {
-		Chat_AddRaw("&cUnable to use terrain.png from the texture pack.");
-		Chat_AddRaw("&c Its height is less than its width.");
-		return false;
-	}
-	if (atlas->width < ATLAS2D_TILES_PER_ROW) {
+	if (!Game_ValidateBitmapPow2(&terrain, atlas)) return false;
+	tileSize = atlas->width / ATLAS2D_TILES_PER_ROW;
+
+	if (tileSize <= 0) {
 		Chat_AddRaw("&cUnable to use terrain.png from the texture pack.");
 		Chat_AddRaw("&c It must be 16 or more pixels wide.");
 		return false;
+	}
+	if (atlas->height < tileSize) {
+		Chat_AddRaw("&cUnable to use terrain.png from the texture pack.");
+		Chat_AddRaw("&c It must have at least one row in it.");
+		return false;
+	}
+
+	if (!Gfx_CheckTextureSize(tileSize, tileSize, 0)) {
+		Chat_AddRaw("&cUnable to use terrain.png from the texture pack.");
+		Chat_Add4("&c Tile size is (%i,%i), your GPU supports (%i,%i) at most.", 
+			&tileSize, &tileSize, &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
+		return false;
+	}
+
+	if (atlas->height < atlas->width) {
+		/* Probably wouldn't want to use these, but you still can technically */
+		Chat_AddRaw("&cHeight of terrain.png is less than its width.");
+		Chat_AddRaw("&c Some tiles will therefore appear completely white.");
+	}
+	if (atlas->width > Gfx.MaxTexWidth) {
+		/* Super HD textures probably won't work great on this GPU */
+		Chat_AddRaw("&cYou may experience significantly reduced performance.");
+		Chat_Add4("&c terrain.png size is (%i,%i), your GPU supports (%i,%i) at most.", 
+			&atlas->width, &atlas->height, &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
 	}
 
 	if (Gfx.LostContext) return false;
@@ -195,11 +297,13 @@ CC_INLINE static void HashUrl(cc_string* key, const cc_string* url) {
 static cc_bool createdCache, cacheInvalid;
 static cc_bool UseDedicatedCache(cc_string* path, const cc_string* key) {
 	cc_result res;
+	cc_filepath str;
 	Directory_GetCachePath(path);
 	if (!path->length || cacheInvalid) return false;
 
 	String_AppendConst(path, "/texturecache");
-	res = Directory_Create(path);
+	Platform_EncodePath(&str, path);
+	res = Directory_Create(&str);
 
 	/* Check if something is deleting the cache directory behind our back */
 	/*  (Several users have reported this happening on some Android devices) */
@@ -232,11 +336,16 @@ CC_NOINLINE static void MakeCachePath(cc_string* mainPath, cc_string* altPath, c
 static int IsCached(const cc_string* url) {
 	cc_string mainPath; char mainBuffer[FILENAME_SIZE];
 	cc_string altPath;  char  altBuffer[FILENAME_SIZE];
+	cc_filepath mainStr, altStr;
+	
 	String_InitArray(mainPath, mainBuffer);
 	String_InitArray(altPath,   altBuffer);
 
 	MakeCachePath(&mainPath, &altPath, url);
-	return File_Exists(&mainPath) || (altPath.length && File_Exists(&altPath));
+	Platform_EncodePath(&mainStr, &mainPath);
+	Platform_EncodePath(&altStr,  &altPath);
+
+	return File_Exists(&mainStr) || (altPath.length && File_Exists(&altStr));
 }
 
 /* Attempts to open the cached data stream for the given url */
@@ -320,18 +429,38 @@ static void UpdateCache(struct HttpRequest* req) {
 /*########################################################################################################################*
 *-------------------------------------------------------TexturePack-------------------------------------------------------*
 *#########################################################################################################################*/
-static char textureUrlBuffer[STRING_SIZE];
+static char textureUrlBuffer[URL_MAX_SIZE];
 static char texpackPathBuffer[FILENAME_SIZE];
 
 cc_string TexturePack_Url  = String_FromArray(textureUrlBuffer);
 cc_string TexturePack_Path = String_FromArray(texpackPathBuffer);
-static const cc_string defaultPath = String_FromConst("texpacks/default.zip");
+cc_bool TexturePack_DefaultMissing;
 
 void TexturePack_SetDefault(const cc_string* texPack) {
 	TexturePack_Path.length = 0;
 	String_Format1(&TexturePack_Path, "texpacks/%s", texPack);
 	Options_Set(OPT_DEFAULT_TEX_PACK, texPack);
 }
+
+cc_result TexturePack_ExtractDefault(DefaultZipCallback callback) {
+	cc_result res = ReturnCode_FileNotFound;
+	const char* defaults[3];
+	cc_string path;
+	int i;
+
+	defaults[0] = Game_Version.DefaultTexpack;
+	defaults[1] = "texpacks/default.zip";
+	defaults[2] = "texpacks/classicube.zip";
+
+	for (i = 0; i < Array_Elems(defaults); i++) 
+	{
+		path = String_FromReadonly(defaults[i]);
+		res  = callback(&path);
+		if (!res) return 0;
+	}
+	return res;
+}
+
 
 static cc_bool SelectZipEntry(const cc_string* path) { return true; }
 static cc_result ProcessZipEntry(const cc_string* path, struct Stream* stream, struct ZipEntry* source) {
@@ -352,6 +481,7 @@ static cc_result ExtractPng(struct Stream* stream) {
 
 static cc_bool needReload;
 static cc_result ExtractFrom(struct Stream* stream, const cc_string* path) {
+	struct ZipEntry entries[512];
 	cc_result res;
 
 	Event_RaiseVoid(&TextureEvents.PackChanged);
@@ -363,7 +493,8 @@ static cc_result ExtractFrom(struct Stream* stream, const cc_string* path) {
 	res = ExtractPng(stream);
 	if (res == PNG_ERR_INVALID_SIG) {
 		/* file isn't a .png image, probably a .zip archive then */
-		res = Zip_Extract(stream, SelectZipEntry, ProcessZipEntry);
+		res = Zip_Extract(stream, SelectZipEntry, ProcessZipEntry,
+							entries, Array_Elems(entries));
 
 		if (res) Logger_SysWarn2(res, "extracting", path);
 	} else if (res) {
@@ -372,34 +503,45 @@ static cc_result ExtractFrom(struct Stream* stream, const cc_string* path) {
 	return res;
 }
 
+#if defined CC_BUILD_PS1 || defined CC_BUILD_SATURN
+#include "../misc/ps1/classicubezip.h"
+
+static cc_result ExtractFromFile(const cc_string* path) {
+	struct Stream stream;
+	Stream_ReadonlyMemory(&stream, ccTextures, ccTextures_length);
+
+	return ExtractFrom(&stream, path);
+}
+#else
 static cc_result ExtractFromFile(const cc_string* path) {
 	struct Stream stream;
 	cc_result res;
 
 	res = Stream_OpenFile(&stream, path);
-	if (res) {
-		/* Game shows a dialog if default.zip is missing */
-		Game_DefaultZipMissing |= res == ReturnCode_FileNotFound
-					&& String_CaselessEquals(path, &defaultPath);
-		Logger_SysWarn2(res, "opening", path); 
-		return res; 
-	}
+	if (res) { Logger_SysWarn2(res, "opening", path); return res; }
 
 	res = ExtractFrom(&stream, path);
 	/* No point logging error for closing readonly file */
 	(void)stream.Close(&stream);
 	return res;
 }
+#endif
 
-static cc_result ExtractDefault(void) {
-	cc_string path = Game_ClassicMode ? defaultPath : TexturePack_Path;
-	cc_result res  = ExtractFromFile(&defaultPath);
+static cc_result ExtractUserTextures(void) {
+	cc_string path;
+	cc_result res;
 
-	/* override default.zip with user's default texture pack */
-	if (!String_CaselessEquals(&path, &defaultPath)) {
-		res = ExtractFromFile(&path);
-	}
-	return res;
+	/* TODO: Log error for multiple default texture pack extract failure */
+	res = TexturePack_ExtractDefault(ExtractFromFile);
+	/* Game shows a warning dialog if default textures are missing */
+	TexturePack_DefaultMissing = res == ReturnCode_FileNotFound;
+
+	path = TexturePack_Path;
+	if (String_CaselessEqualsConst(&path, "texpacks/default.zip")) path.length = 0;
+	if (Game_ClassicMode || path.length == 0) return res;
+
+	/* override default textures with user's selected texture pack */
+	return ExtractFromFile(&path);
 }
 
 static cc_bool usingDefault;
@@ -410,7 +552,7 @@ cc_result TexturePack_ExtractCurrent(cc_bool forceReload) {
 
 	/* don't pointlessly load default texture pack */
 	if (!usingDefault || forceReload) {
-		res = ExtractDefault();
+		res = ExtractUserTextures();
 		usingDefault = true;
 	}
 
@@ -421,6 +563,9 @@ cc_result TexturePack_ExtractCurrent(cc_bool forceReload) {
 		/* No point logging error for closing readonly file */
 		(void)stream.Close(&stream);
 	}
+
+	/* Use fallback terrain texture with 1 pixel per tile */
+	if (!Atlas2D.Bmp.scan0) LoadFallbackAtlas();
 	return res;
 }
 
@@ -430,7 +575,7 @@ static void ApplyDownloaded(struct HttpRequest* item) {
 	cc_string url;
 
 	url = String_FromRawArray(item->url);
-	UpdateCache(item);
+	if (!Platform_ReadonlyFilesystem) UpdateCache(item);
 	/* Took too long to download and is no longer active texture pack */
 	if (!String_Equals(&TexturePack_Url, &url)) return;
 
@@ -539,9 +684,7 @@ static void OnInit(void) {
 
 	TexturePack_Path.length = 0;
 	if (Options_UNSAFE_Get(OPT_DEFAULT_TEX_PACK, &file)) {
-		String_Format1(&TexturePack_Path,      "texpacks/%s", &file);
-	} else {
-		String_AppendString(&TexturePack_Path, &defaultPath);
+		String_Format1(&TexturePack_Path, "texpacks/%s", &file);
 	}
 	
 	/* TODO temp hack to fix mobile, need to properly fix */

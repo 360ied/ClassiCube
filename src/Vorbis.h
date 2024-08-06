@@ -1,9 +1,11 @@
 #ifndef CC_VORBIS_H
 #define CC_VORBIS_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Decodes ogg vorbis audio into 16 bit PCM samples
-Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct Stream;
 #define VORBIS_MAX_CHANS 8
@@ -56,7 +58,9 @@ struct VorbisState {
 	struct imdct_state imdct[2];
 };
 
-/* Frees all dynamic memory allocated to decode the given vorbis audio. */
+/* Initialises the given context to defaults */
+void Vorbis_Init(struct VorbisState* ctx);
+/* Frees all memory dynamically allocated by the given context */
 void Vorbis_Free(struct VorbisState* ctx);
 /* Reads and decodes the initial vorbis headers and setup data. */
 cc_result Vorbis_DecodeHeaders(struct VorbisState* ctx);
@@ -64,4 +68,6 @@ cc_result Vorbis_DecodeHeaders(struct VorbisState* ctx);
 cc_result Vorbis_DecodeFrame(struct VorbisState* ctx);
 /* Produces final interleaved audio samples for the current frame. */
 int Vorbis_OutputFrame(struct VorbisState* ctx, cc_int16* data);
+
+CC_END_HEADER
 #endif

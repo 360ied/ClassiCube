@@ -1,5 +1,5 @@
 #include "Core.h"
-#if defined CC_BUILD_X11 && !defined CC_BUILD_SDL
+#if CC_WIN_BACKEND == CC_WIN_BACKEND_X11
 #include "_WindowBase.h"
 #include "String.h"
 #include "Funcs.h"
@@ -7,12 +7,21 @@
 #include "Options.h"
 #include "Errors.h"
 #include "Utils.h"
+/*
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/XKBlib.h>
+#include <X11/XF86keysym.h>
 #ifdef CC_BUILD_XINPUT2
 #include <X11/extensions/XInput2.h>
 #endif
+*/
+#include "../misc/x11/min-xlib.h"
+#include "../misc/x11/min-keysymdef.h"
+#include "../misc/x11/min-xutil.h"
+#include "../misc/x11/min-xkblib.h"
+#include "../misc/x11/min-xinput2.h"
+#include "../misc/x11/min-XF86keysym.h"
 #include <stdio.h>
 
 #ifdef X_HAVE_UTF8_STRING
@@ -26,7 +35,7 @@
 #define _NET_WM_STATE_TOGGLE 2
 
 static Display* win_display;
-static Window win_rootWin, win_handle;
+static Window win_rootWin;
 static XVisualInfo win_visual;
 #ifdef CC_BUILD_XIM
 static XIM win_xim;
@@ -50,22 +59,47 @@ static int MapNativeKey(KeySym key, unsigned int state) {
 	if (key >= XK_A && key <= XK_Z) { return 'A' + (key - XK_A); }
 	if (key >= XK_a && key <= XK_z) { return 'A' + (key - XK_a); }
 
-	if (key >= XK_F1 && key <= XK_F24)    { return KEY_F1  + (key - XK_F1); }
-	if (key >= XK_KP_0 && key <= XK_KP_9) { return KEY_KP0 + (key - XK_KP_0); }
+	if (key >= XK_F1 && key <= XK_F24)    { return CCKEY_F1  + (key - XK_F1); }
+	if (key >= XK_KP_0 && key <= XK_KP_9) { return CCKEY_KP0 + (key - XK_KP_0); }
 
 	/* Same Num Lock behaviour as Windows and text editors */
 	if (key >= XK_KP_Home && key <= XK_KP_Delete && !(state & Mod2Mask)) {
-		if (key == XK_KP_Home) return KEY_HOME;
-		if (key == XK_KP_Up)   return KEY_UP;
-		if (key == XK_KP_Page_Up) return KEY_PAGEUP;
+		if (key == XK_KP_Home) return CCKEY_HOME;
+		if (key == XK_KP_Up)   return CCKEY_UP;
+		if (key == XK_KP_Page_Up) return CCKEY_PAGEUP;
 
-		if (key == XK_KP_Left)   return KEY_LEFT;
-		if (key == XK_KP_Insert) return KEY_INSERT;
-		if (key == XK_KP_Right)  return KEY_RIGHT;
+		if (key == XK_KP_Left)   return CCKEY_LEFT;
+		if (key == XK_KP_Insert) return CCKEY_INSERT;
+		if (key == XK_KP_Right)  return CCKEY_RIGHT;
 
-		if (key == XK_KP_End)  return KEY_END;
-		if (key == XK_KP_Down) return KEY_DOWN;
-		if (key == XK_KP_Page_Down) return KEY_PAGEDOWN;
+		if (key == XK_KP_End)  return CCKEY_END;
+		if (key == XK_KP_Down) return CCKEY_DOWN;
+		if (key == XK_KP_Page_Down) return CCKEY_PAGEDOWN;
+	}
+	
+	switch (key) {
+		case XF86XK_AudioLowerVolume: return CCKEY_VOLUME_DOWN;
+		case XF86XK_AudioMute:        return CCKEY_VOLUME_MUTE;
+		case XF86XK_AudioRaiseVolume: return CCKEY_VOLUME_UP;
+		
+		case XF86XK_AudioPlay: return CCKEY_MEDIA_PLAY;
+		case XF86XK_AudioStop: return CCKEY_MEDIA_STOP;
+		case XF86XK_AudioPrev: return CCKEY_MEDIA_PREV;
+		case XF86XK_AudioNext: return CCKEY_MEDIA_NEXT;
+		
+		case XF86XK_HomePage:   return CCKEY_BROWSER_HOME;
+		case XF86XK_Mail:       return CCKEY_LAUNCH_MAIL;
+		case XF86XK_Search:     return CCKEY_BROWSER_SEARCH;
+		case XF86XK_Calculator: return CCKEY_LAUNCH_CALC;
+		
+		case XF86XK_Back:       return CCKEY_BROWSER_PREV;
+		case XF86XK_Forward:    return CCKEY_BROWSER_NEXT;
+		case XF86XK_Stop:       return CCKEY_BROWSER_STOP;
+		case XF86XK_Refresh:    return CCKEY_BROWSER_REFRESH;
+		case XF86XK_Sleep:      return CCKEY_SLEEP;
+		case XF86XK_Favorites:  return CCKEY_BROWSER_FAVORITES;
+		case XF86XK_AudioMedia: return CCKEY_LAUNCH_MEDIA;
+		case XF86XK_MyComputer: return CCKEY_LAUNCH_APP1;
 	}
 
 	/* A chromebook user reported issues with pressing some keys: */
@@ -77,101 +111,111 @@ static int MapNativeKey(KeySym key, unsigned int state) {
 	key &= 0xFFFF;
 
 	switch (key) {
-		case XK_Escape: return KEY_ESCAPE;
-		case XK_Return: return KEY_ENTER;
-		case XK_space: return KEY_SPACE;
-		case XK_BackSpace: return KEY_BACKSPACE;
+		case XK_Escape: return CCKEY_ESCAPE;
+		case XK_Return: return CCKEY_ENTER;
+		case XK_space: return CCKEY_SPACE;
+		case XK_BackSpace: return CCKEY_BACKSPACE;
 
-		case XK_Shift_L: return KEY_LSHIFT;
-		case XK_Shift_R: return KEY_RSHIFT;
-		case XK_Alt_L: return KEY_LALT;
-		case XK_Alt_R: return KEY_RALT;
-		case XK_Control_L: return KEY_LCTRL;
-		case XK_Control_R: return KEY_RCTRL;
-		case XK_Super_L: return KEY_LWIN;
-		case XK_Super_R: return KEY_RWIN;
-		case XK_Meta_L: return KEY_LWIN;
-		case XK_Meta_R: return KEY_RWIN;
+		case XK_Shift_L: return CCKEY_LSHIFT;
+		case XK_Shift_R: return CCKEY_RSHIFT;
+		case XK_Alt_L: return CCKEY_LALT;
+		case XK_Alt_R: return CCKEY_RALT;
+		case XK_Control_L: return CCKEY_LCTRL;
+		case XK_Control_R: return CCKEY_RCTRL;
+		case XK_Super_L: return CCKEY_LWIN;
+		case XK_Super_R: return CCKEY_RWIN;
+		case XK_Meta_L: return CCKEY_LWIN;
+		case XK_Meta_R: return CCKEY_RWIN;
 
-		case XK_Menu:  return KEY_MENU;
-		case XK_Tab:   return KEY_TAB;
-		case XK_minus: return KEY_MINUS;
-		case XK_plus:  return KEY_EQUALS;
-		case XK_equal: return KEY_EQUALS;
+		case XK_Menu:  return CCKEY_MENU;
+		case XK_Tab:   return CCKEY_TAB;
+		case XK_minus: return CCKEY_MINUS;
+		case XK_plus:  return CCKEY_EQUALS;
+		case XK_equal: return CCKEY_EQUALS;
 
-		case XK_Caps_Lock: return KEY_CAPSLOCK;
-		case XK_Num_Lock:  return KEY_NUMLOCK;
+		case XK_Caps_Lock: return CCKEY_CAPSLOCK;
+		case XK_Num_Lock:  return CCKEY_NUMLOCK;
 
-		case XK_Pause: return KEY_PAUSE;
-		case XK_Break: return KEY_PAUSE;
-		case XK_Scroll_Lock: return KEY_SCROLLLOCK;
-		case XK_Insert:  return KEY_INSERT;
-		case XK_Print:   return KEY_PRINTSCREEN;
-		case XK_Sys_Req: return KEY_PRINTSCREEN;
+		case XK_Pause: return CCKEY_PAUSE;
+		case XK_Break: return CCKEY_PAUSE;
+		case XK_Scroll_Lock: return CCKEY_SCROLLLOCK;
+		case XK_Insert:  return CCKEY_INSERT;
+		case XK_Print:   return CCKEY_PRINTSCREEN;
+		case XK_Sys_Req: return CCKEY_PRINTSCREEN;
 
-		case XK_backslash: return KEY_BACKSLASH;
-		case XK_bar:       return KEY_BACKSLASH;
-		case XK_braceleft:    return KEY_LBRACKET;
-		case XK_bracketleft:  return KEY_LBRACKET;
-		case XK_braceright:   return KEY_RBRACKET;
-		case XK_bracketright: return KEY_RBRACKET;
-		case XK_colon:      return KEY_SEMICOLON;
-		case XK_semicolon:  return KEY_SEMICOLON;
-		case XK_quoteright: return KEY_QUOTE;
-		case XK_quotedbl:   return KEY_QUOTE;
-		case XK_quoteleft:  return KEY_TILDE;
-		case XK_asciitilde: return KEY_TILDE;
+		case XK_backslash: return CCKEY_BACKSLASH;
+		case XK_bar:       return CCKEY_BACKSLASH;
+		case XK_braceleft:    return CCKEY_LBRACKET;
+		case XK_bracketleft:  return CCKEY_LBRACKET;
+		case XK_braceright:   return CCKEY_RBRACKET;
+		case XK_bracketright: return CCKEY_RBRACKET;
+		case XK_colon:      return CCKEY_SEMICOLON;
+		case XK_semicolon:  return CCKEY_SEMICOLON;
+		case XK_quoteright: return CCKEY_QUOTE;
+		case XK_quotedbl:   return CCKEY_QUOTE;
+		case XK_quoteleft:  return CCKEY_TILDE;
+		case XK_asciitilde: return CCKEY_TILDE;
 
-		case XK_comma: return KEY_COMMA;
-		case XK_less:  return KEY_COMMA;
-		case XK_period:  return KEY_PERIOD;
-		case XK_greater: return KEY_PERIOD;
-		case XK_slash:    return KEY_SLASH;
-		case XK_question: return KEY_SLASH;
+		case XK_comma: return CCKEY_COMMA;
+		case XK_less:  return CCKEY_COMMA;
+		case XK_period:  return CCKEY_PERIOD;
+		case XK_greater: return CCKEY_PERIOD;
+		case XK_slash:    return CCKEY_SLASH;
+		case XK_question: return CCKEY_SLASH;
 
-		case XK_Left:  return KEY_LEFT;
-		case XK_Down:  return KEY_DOWN;
-		case XK_Right: return KEY_RIGHT;
-		case XK_Up:    return KEY_UP;
+		case XK_Left:  return CCKEY_LEFT;
+		case XK_Down:  return CCKEY_DOWN;
+		case XK_Right: return CCKEY_RIGHT;
+		case XK_Up:    return CCKEY_UP;
 
-		case XK_Delete: return KEY_DELETE;
-		case XK_Home:   return KEY_HOME;
-		case XK_End:    return KEY_END;
-		case XK_Page_Up:   return KEY_PAGEUP;
-		case XK_Page_Down: return KEY_PAGEDOWN;
+		case XK_Delete: return CCKEY_DELETE;
+		case XK_Home:   return CCKEY_HOME;
+		case XK_End:    return CCKEY_END;
+		case XK_Page_Up:   return CCKEY_PAGEUP;
+		case XK_Page_Down: return CCKEY_PAGEDOWN;
 
-		case XK_KP_Add: return KEY_KP_PLUS;
-		case XK_KP_Subtract: return KEY_KP_MINUS;
-		case XK_KP_Multiply: return KEY_KP_MULTIPLY;
-		case XK_KP_Divide:  return KEY_KP_DIVIDE;
-		case XK_KP_Decimal: return KEY_KP_DECIMAL;
-		case XK_KP_Insert: return KEY_KP0;
-		case XK_KP_End:  return KEY_KP1;
-		case XK_KP_Down: return KEY_KP2;
-		case XK_KP_Page_Down: return KEY_KP3;
-		case XK_KP_Left:  return KEY_KP4;
-		case XK_KP_Begin: return KEY_KP5;
-		case XK_KP_Right: return KEY_KP6;
-		case XK_KP_Home: return KEY_KP7;
-		case XK_KP_Up:   return KEY_KP8;
-		case XK_KP_Page_Up: return KEY_KP9;
-		case XK_KP_Delete:  return KEY_KP_DECIMAL;
-		case XK_KP_Enter:   return KEY_KP_ENTER;
+		case XK_KP_Add: return CCKEY_KP_PLUS;
+		case XK_KP_Subtract: return CCKEY_KP_MINUS;
+		case XK_KP_Multiply: return CCKEY_KP_MULTIPLY;
+		case XK_KP_Divide:  return CCKEY_KP_DIVIDE;
+		case XK_KP_Decimal: return CCKEY_KP_DECIMAL;
+		case XK_KP_Insert: return CCKEY_KP0;
+		case XK_KP_End:  return CCKEY_KP1;
+		case XK_KP_Down: return CCKEY_KP2;
+		case XK_KP_Page_Down: return CCKEY_KP3;
+		case XK_KP_Left:  return CCKEY_KP4;
+		case XK_KP_Begin: return CCKEY_KP5;
+		case XK_KP_Right: return CCKEY_KP6;
+		case XK_KP_Home: return CCKEY_KP7;
+		case XK_KP_Up:   return CCKEY_KP8;
+		case XK_KP_Page_Up: return CCKEY_KP9;
+		case XK_KP_Delete:  return CCKEY_KP_DECIMAL;
+		case XK_KP_Enter:   return CCKEY_KP_ENTER;
+		
+		case XK_ISO_Level3_Shift: return CCKEY_RALT; /* AltGr mode switch on some European keyboard layouts */
 	}
-	return KEY_NONE;
+	return INPUT_NONE;
 }
 
 /* NOTE: This may not be entirely accurate, because user can configure keycode mappings */
 static const cc_uint8 keycodeMap[136] = {
-	0, 0, 0, 0, 0, 0, 0, 0, 0, KEY_ESCAPE, '1', '2', '3', '4', '5', '6',
-	'7', '8', '9', '0', KEY_MINUS, KEY_EQUALS, KEY_BACKSPACE, KEY_TAB, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
-	'O',  'P', KEY_LBRACKET, KEY_RBRACKET, KEY_ENTER, KEY_LCTRL, 'A', 'S', 'D', 'F', 'G', 'H',  'J', 'K', 'L', KEY_SEMICOLON,
-	KEY_QUOTE, KEY_TILDE, KEY_LSHIFT, KEY_BACKSLASH, 'Z', 'X', 'C', 'V', 'B', 'N', 'M', KEY_PERIOD, KEY_COMMA, KEY_SLASH, KEY_RSHIFT, KEY_KP_MULTIPLY,
-	KEY_LALT, KEY_SPACE, KEY_CAPSLOCK, KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_NUMLOCK, KEY_SCROLLLOCK, KEY_KP7,
-	KEY_KP8, KEY_KP9, KEY_KP_MINUS, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP_PLUS, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP0, KEY_KP_DECIMAL, 0, 0, 0, KEY_F11,
-	KEY_F12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	KEY_RALT, KEY_RCTRL, KEY_HOME, KEY_UP, KEY_PAGEUP, KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DOWN, KEY_PAGEDOWN, KEY_INSERT, KEY_DELETE, 0, 0, 0, 0,
-	0, 0, 0, KEY_PAUSE, 0, 0, 0, 0, 0, KEY_LWIN, 0, KEY_RWIN
+/* 00 */ 0, 0, 0, 0, 0, 0, 0, 0, 
+/* 08 */ 0, CCKEY_ESCAPE, '1', '2', '3', '4', '5', '6',
+/* 10 */ '7', '8', '9', '0', CCKEY_MINUS, CCKEY_EQUALS, CCKEY_BACKSPACE, CCKEY_TAB, 
+/* 18 */ 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
+/* 20 */ 'O',  'P', CCKEY_LBRACKET, CCKEY_RBRACKET, CCKEY_ENTER, CCKEY_LCTRL, 'A', 'S', 
+/* 28 */ 'D', 'F', 'G', 'H',  'J', 'K', 'L', CCKEY_SEMICOLON,
+/* 30 */ CCKEY_QUOTE, CCKEY_TILDE, CCKEY_LSHIFT, CCKEY_BACKSLASH, 'Z', 'X', 'C', 'V', 
+/* 38 */ 'B', 'N', 'M', CCKEY_PERIOD, CCKEY_COMMA, CCKEY_SLASH, CCKEY_RSHIFT, CCKEY_KP_MULTIPLY,
+/* 40 */ CCKEY_LALT, CCKEY_SPACE, CCKEY_CAPSLOCK, CCKEY_F1, CCKEY_F2, CCKEY_F3, CCKEY_F4, CCKEY_F5, 
+/* 48 */ CCKEY_F6, CCKEY_F7, CCKEY_F8, CCKEY_F9, CCKEY_F10, CCKEY_NUMLOCK, CCKEY_SCROLLLOCK, CCKEY_KP7,
+/* 50 */ CCKEY_KP8, CCKEY_KP9, CCKEY_KP_MINUS, CCKEY_KP4, CCKEY_KP5, CCKEY_KP6, CCKEY_KP_PLUS, CCKEY_KP1, 
+/* 58 */ CCKEY_KP2, CCKEY_KP3, CCKEY_KP0, CCKEY_KP_DECIMAL, 0, 0, 0, CCKEY_F11,
+/* 60 */ CCKEY_F12, 0, 0, 0, 0, 0, 0, 0, 
+/* 68 */ 0, 0, 0, 0, CCKEY_RALT, CCKEY_RCTRL, CCKEY_HOME, CCKEY_UP, 
+/* 70 */ CCKEY_PAGEUP, CCKEY_LEFT, CCKEY_RIGHT, CCKEY_END, CCKEY_DOWN, CCKEY_PAGEDOWN, CCKEY_INSERT, CCKEY_DELETE, 
+/* 78 */ 0, 0, 0, 0, 0, 0, 0, CCKEY_PAUSE, 
+/* 80 */ 0, 0, 0, 0, 0, CCKEY_LWIN, 0, CCKEY_RWIN
 };
 
 static int MapNativeKeycode(unsigned int keycode) {
@@ -193,9 +237,9 @@ static void RegisterAtoms(void) {
 }
 
 static void RefreshWindowBounds(int width, int height) {
-	if (width != WindowInfo.Width || height != WindowInfo.Height) {
-		WindowInfo.Width  = width;
-		WindowInfo.Height = height;
+	if (width != Window_Main.Width || height != Window_Main.Height) {
+		Window_Main.Width  = width;
+		Window_Main.Height = height;
 		Event_RaiseVoid(&WindowEvents.Resized);
 	}
 }
@@ -234,14 +278,14 @@ static void HookXErrors(void) {
 /*########################################################################################################################*
 *--------------------------------------------------Public implementation--------------------------------------------------*
 *#########################################################################################################################*/
-#ifdef CC_BUILD_EGL
+#if defined CC_BUILD_EGL || !CC_GFX_BACKEND_IS_GL()
 static XVisualInfo GLContext_SelectVisual(void) {
 	XVisualInfo info;
 	cc_result res;
 	int screen = DefaultScreen(win_display);
 
 	res = XMatchVisualInfo(win_display, screen, 24, TrueColor, &info) ||
-		XMatchVisualInfo(win_display, screen, 32, TrueColor, &info);
+		  XMatchVisualInfo(win_display, screen, 32, TrueColor, &info);
 
 	if (!res) Logger_Abort("Selecting visual");
 	return info;
@@ -249,6 +293,10 @@ static XVisualInfo GLContext_SelectVisual(void) {
 #else
 static XVisualInfo GLContext_SelectVisual(void);
 #endif
+
+void Window_PreInit(void) { 
+	DisplayInfo.CursorVisible = true;
+}
 
 void Window_Init(void) {
 	Display* display = XOpenDisplay(NULL);
@@ -260,6 +308,7 @@ void Window_Init(void) {
 
 	win_display = display;
 	win_rootWin = RootWindow(display, screen);
+	Input.Sources = INPUT_SOURCE_NORMAL;
 
 	/* TODO: Use Xinerama and XRandR for querying these */
 	DisplayInfo.Width  = DisplayWidth(display,  screen);
@@ -269,17 +318,21 @@ void Window_Init(void) {
 	DisplayInfo.ScaleY = 1;
 }
 
-#ifdef CC_BUILD_ICON
-/* See misc/linux_icon_gen.cs for how to generate this file */
-#include "_CCIcon_X11.h"
+void Window_Free(void) { }
 
-static void ApplyIcon(void) {
+#ifdef CC_BUILD_ICON
+/* See misc/x11/x11_icon_gen.cs for how to generate this file */
+#include "../misc/x11/CCIcon_X11.h"
+
+static void ApplyIcon(Window win) {
 	Atom net_wm_icon = XInternAtom(win_display, "_NET_WM_ICON", false);
 	Atom xa_cardinal = XInternAtom(win_display, "CARDINAL", false);
-	XChangeProperty(win_display, win_handle, net_wm_icon, xa_cardinal, 32, PropModeReplace, CCIcon_Data, CCIcon_Size);
+	
+	XChangeProperty(win_display, win, net_wm_icon, xa_cardinal, 32, PropModeReplace, 
+					(unsigned char*)CCIcon_Data, CCIcon_Size);
 }
 #else
-static void ApplyIcon(void) { }
+static void ApplyIcon(Window win) { }
 #endif
 
 static void DoCreateWindow(int width, int height) {
@@ -299,15 +352,21 @@ static void DoCreateWindow(int width, int height) {
 	attributes.colormap   = XCreateColormap(win_display, win_rootWin, win_visual.visual, AllocNone);
 	attributes.event_mask = win_eventMask;
 
-	win_handle = XCreateWindow(win_display, win_rootWin, x, y, width, height,
-		0, win_visual.depth /* CopyFromParent*/, InputOutput, win_visual.visual, 
-		CWColormap | CWEventMask | CWBackPixel | CWBorderPixel, &attributes);
-	if (!win_handle) Logger_Abort("XCreateWindow failed");
+	Window win = XCreateWindow(win_display, win_rootWin, x, y, width, height,
+		0, win_visual.depth /* CopyFromParent*/, InputOutput, win_visual.visual,
+#ifdef CC_BUILD_IRIX
+		CWColormap | CWEventMask | CWBlackPixel | CWBorderPixel, &attributes);
+#else
+		/* Omitting black/border pixels produces nicer looking resizing on some WMs */
+		CWColormap | CWEventMask, &attributes);
+#endif
+
+	if (!win) Logger_Abort("XCreateWindow failed");
 
 #ifdef CC_BUILD_XIM
 	win_xim = XOpenIM(win_display, NULL, NULL, NULL);
 	win_xic = XCreateIC(win_xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
-						XNClientWindow, win_handle, NULL);
+						XNClientWindow, win, NULL);
 #endif
 
 	/* Set hints to try to force WM to create window at requested x,y */
@@ -315,12 +374,12 @@ static void DoCreateWindow(int width, int height) {
 	hints.base_width  = width;
 	hints.base_height = height;
 	hints.flags = PSize | PPosition;
-	XSetWMNormalHints(win_display, win_handle, &hints);
+	XSetWMNormalHints(win_display, win, &hints);
 
 	/* Register for window destroy notification */
 	protocols[0] = wm_destroy;
 	protocols[1] = net_wm_ping;
-	XSetWMProtocols(win_display, win_handle, protocols, 2);
+	XSetWMProtocols(win_display, win, protocols, 2);
 
 	/* Request that auto-repeat is only set on devices that support it physically.
 	   This typically means that it's turned off for keyboards (which is what we want).
@@ -329,28 +388,44 @@ static void DoCreateWindow(int width, int height) {
 	XkbSetDetectableAutoRepeat(win_display, true, &supported);
 
 	RefreshWindowBounds(width, height);
-	WindowInfo.Exists = true;
-	WindowInfo.Handle = (void*)win_handle;
+	Window_Main.Exists     = true;
+	Window_Main.Handle.val = win;
+	Window_Main.UIScaleX   = DEFAULT_UI_SCALE_X;
+	Window_Main.UIScaleY   = DEFAULT_UI_SCALE_Y;
 	grabCursor = Options_GetBool(OPT_GRAB_CURSOR, false);
 	
 	/* So right name appears in e.g. Ubuntu Unity launchbar */
 	XClassHint hint = { 0 };
-	hint.res_name   = GAME_APP_TITLE;
-	hint.res_class  = GAME_APP_TITLE;
-	XSetClassHint(win_display, win_handle, &hint);
-	ApplyIcon();
+	#ifdef CC_BUILD_FLATPAK
+		hint.res_name   = (char*)"net.classicube.flatpak.client";
+		hint.res_class  = (char*)"net.classicube.flatpak.client";
+	#else
+		hint.res_name   = (char*)GAME_APP_TITLE;
+		hint.res_class  = (char*)GAME_APP_TITLE;
+	#endif
+	XSetClassHint(win_display, win, &hint);
+	ApplyIcon(win);
 
 	/* Check for focus initially, in case WM doesn't send a FocusIn event */
 	XGetInputFocus(win_display, &focus, &focusRevert);
-	if (focus == win_handle) WindowInfo.Focused = true;
+	if (focus == win) Window_Main.Focused = true;
 }
 void Window_Create2D(int width, int height) { DoCreateWindow(width, height); }
 void Window_Create3D(int width, int height) { DoCreateWindow(width, height); }
 
+void Window_Destroy(void) {
+	Window win = Window_Main.Handle.val;
+	/* sync and discard all events queued */
+	XSync(win_display, true);
+	XDestroyWindow(win_display, win);
+	Window_Main.Exists = false;
+}
+
 void Window_SetTitle(const cc_string* title) {
+	Window win = Window_Main.Handle.val;
 	char str[NATIVE_STR_LEN];
 	String_EncodeUtf8(str, title);
-	XStoreName(win_display, win_handle, str);
+	XStoreName(win_display, win, str);
 }
 
 static char clipboard_copy_buffer[256];
@@ -360,17 +435,18 @@ static cc_string clipboard_paste_text = String_FromArray(clipboard_paste_buffer)
 static cc_bool clipboard_paste_received;
 
 void Clipboard_GetText(cc_string* value) {
+	Window win   = Window_Main.Handle.val;
 	Window owner = XGetSelectionOwner(win_display, xa_clipboard);
 	int i;
 	if (!owner) return; /* no window owner */
 
-	XConvertSelection(win_display, xa_clipboard, xa_utf8_string, xa_data_sel, win_handle, 0);
+	XConvertSelection(win_display, xa_clipboard, xa_utf8_string, xa_data_sel, win, 0);
 	clipboard_paste_received    = false;
 	clipboard_paste_text.length = 0;
 
 	/* wait up to 1 second for SelectionNotify event to arrive */
 	for (i = 0; i < 100; i++) {
-		Window_ProcessEvents();
+		Window_ProcessEvents(0.0);
 		if (clipboard_paste_received) {
 			String_AppendString(value, &clipboard_paste_text);
 			return;
@@ -381,33 +457,37 @@ void Clipboard_GetText(cc_string* value) {
 }
 
 void Clipboard_SetText(const cc_string* value) {
+	Window win = Window_Main.Handle.val;
 	String_Copy(&clipboard_copy_text, value);
-	XSetSelectionOwner(win_display, xa_clipboard, win_handle, 0);
+	XSetSelectionOwner(win_display, xa_clipboard, win, 0);
 }
 
 int Window_GetWindowState(void) {
 	cc_bool fullscreen = false, minimised = false;
+	Window win = Window_Main.Handle.val;
 	Atom prop_type;
 	unsigned long items, after;
+	unsigned char* data = NULL;
 	int i, prop_format;
-	Atom* data = NULL;
+	Atom* list;
 
-	XGetWindowProperty(win_display, win_handle,
+	XGetWindowProperty(win_display, win,
 		net_wm_state, 0, 256, false, xa_atom, &prop_type,
 		&prop_format, &items, &after, &data);
 
-	if (data) {
-		for (i = 0; i < items; i++) {
-			Atom atom = data[i];
+	if (!data) return WINDOW_STATE_NORMAL;
+	list = (Atom*)data;
+		
+	for (i = 0; i < items; i++) {
+		Atom atom = list[i];
 
-			if (atom == net_wm_state_minimized) {
-				minimised  = true;
-			} else if (atom == net_wm_state_fullscreen) {
-				fullscreen = true;
-			}
+		if (atom == net_wm_state_minimized) {
+			minimised  = true;
+		} else if (atom == net_wm_state_fullscreen) {
+			fullscreen = true;
 		}
-		XFree(data);
 	}
+	XFree(data);
 
 	if (fullscreen) return WINDOW_STATE_FULLSCREEN;
 	if (minimised)  return WINDOW_STATE_MINIMISED;
@@ -415,9 +495,10 @@ int Window_GetWindowState(void) {
 }
 
 static void ToggleFullscreen(long op) {
-	XEvent ev = { 0 };
+	Window win = Window_Main.Handle.val;
+	XEvent ev  = { 0 };
 	ev.xclient.type   = ClientMessage;
-	ev.xclient.window = win_handle;
+	ev.xclient.window = win;
 	ev.xclient.message_type = net_wm_state;
 	ev.xclient.format = 32;
 	ev.xclient.data.l[0] = op;
@@ -426,8 +507,8 @@ static void ToggleFullscreen(long op) {
 	XSendEvent(win_display, win_rootWin, false,
 		SubstructureRedirectMask | SubstructureNotifyMask, &ev);
 	XSync(win_display, false);
-	XRaiseWindow(win_display, win_handle);
-	Window_ProcessEvents();
+	XRaiseWindow(win_display, win);
+	Window_ProcessEvents(0.0);
 }
 
 cc_result Window_EnterFullscreen(void) {
@@ -439,31 +520,36 @@ cc_result Window_ExitFullscreen(void) {
 
 int Window_IsObscured(void) { return 0; }
 
-void Window_Show(void) { XMapWindow(win_display, win_handle); }
-
-void Window_SetSize(int width, int height) {
-	XResizeWindow(win_display, win_handle, width, height);
-	Window_ProcessEvents();
+void Window_Show(void) {
+	Window win = Window_Main.Handle.val;
+	XMapWindow(win_display, win); 
 }
 
-void Window_Close(void) {
-	XEvent ev = { 0 };
-	ev.type = ClientMessage;
-	ev.xclient.format  = 32;
-	ev.xclient.display = win_display;
-	ev.xclient.window  = win_handle;
-	ev.xclient.data.l[0] = wm_destroy;
+void Window_SetSize(int width, int height) {
+	Window win = Window_Main.Handle.val;
+	XResizeWindow(win_display, win, width, height);
+	Window_ProcessEvents(0.0);
+}
 
-	XSendEvent(win_display, win_handle, false, 0, &ev);
-	XFlush(win_display);
+void Window_RequestClose(void) {
+	Event_RaiseVoid(&WindowEvents.Closing);
 }
 
 static int MapNativeMouse(int button) {
-	if (button == 1) return KEY_LMOUSE;
-	if (button == 2) return KEY_MMOUSE;
-	if (button == 3) return KEY_RMOUSE;
-	if (button == 8) return KEY_XBUTTON1;
-	if (button == 9) return KEY_XBUTTON2;
+	if (button == 1) return CCMOUSE_L;
+	if (button == 2) return CCMOUSE_M;
+	if (button == 3) return CCMOUSE_R;
+
+	if (button ==  8) return CCMOUSE_X1;
+	if (button ==  9) return CCMOUSE_X2;
+	if (button == 10) return CCMOUSE_X3;
+	if (button == 11) return CCMOUSE_X4;
+	if (button == 12) return CCMOUSE_X5;
+	if (button == 13) return CCMOUSE_X6;
+
+	/* Mouse horizontal and vertical scroll */
+	if (button >= 4 && button <= 7) return 0;
+	Platform_Log1("Unknown mouse button: %i", &button);
 	return 0;
 }
 
@@ -499,11 +585,7 @@ static Bool FilterEvent(Display* d, XEvent* e, XPointer w) {
 static void HandleWMDestroy(void) {
 	Platform_LogConst("Exit message received.");
 	Event_RaiseVoid(&WindowEvents.Closing);
-
-	/* sync and discard all events queued */
-	XSync(win_display, true);
-	XDestroyWindow(win_display, win_handle);
-	WindowInfo.Exists = false;
+	Window_Main.Exists = false;
 }
 
 static void HandleWMPing(XEvent* e) {
@@ -513,14 +595,15 @@ static void HandleWMPing(XEvent* e) {
 }
 static void HandleGenericEvent(XEvent* e);
 
-void Window_ProcessEvents(void) {
+void Window_ProcessEvents(float delta) {
+	Window win = Window_Main.Handle.val;
 	XEvent e;
 	Window focus;
 	int focusRevert;
 	int i, btn, key, status;
 
-	while (WindowInfo.Exists) {
-		if (!XCheckIfEvent(win_display, &e, FilterEvent, (XPointer)win_handle)) break;
+	while (Window_Main.Exists) {
+		if (!XCheckIfEvent(win_display, &e, FilterEvent, (XPointer)win)) break;
 		if (XFilterEvent(&e, None) == True) continue;
 
 		switch (e.type) {
@@ -536,7 +619,7 @@ void Window_ProcessEvents(void) {
 
 		case DestroyNotify:
 			Platform_LogConst("Window destroyed");
-			WindowInfo.Exists = false;
+			Window_Main.Exists = false;
 			break;
 
 		case ConfigureNotify:
@@ -550,14 +633,14 @@ void Window_ProcessEvents(void) {
 		case LeaveNotify:
 			XGetInputFocus(win_display, &focus, &focusRevert);
 			if (focus == PointerRoot) {
-				WindowInfo.Focused = false; Event_RaiseVoid(&WindowEvents.FocusChanged);
+				Window_Main.Focused = false; Event_RaiseVoid(&WindowEvents.FocusChanged);
 			}
 			break;
 
 		case EnterNotify:
 			XGetInputFocus(win_display, &focus, &focusRevert);
 			if (focus == PointerRoot) {
-				WindowInfo.Focused = true; Event_RaiseVoid(&WindowEvents.FocusChanged);
+				Window_Main.Focused = true; Event_RaiseVoid(&WindowEvents.FocusChanged);
 			}
 			break;
 
@@ -574,7 +657,7 @@ void Window_ProcessEvents(void) {
 
 			status = Xutf8LookupString(win_xic, &e.xkey, data, Array_Elems(data), NULL, &status_type);
 			while (status > 0) {
-				i = Convert_Utf8ToCodepoint(&cp, chars, status);
+				i = Convert_Utf8ToCodepoint(&cp, (cc_uint8*)chars, status);
 				if (!i) break;
 
 				Event_RaiseInt(&InputEvents.Press, cp);
@@ -598,8 +681,10 @@ void Window_ProcessEvents(void) {
 		case ButtonPress:
 			btn = MapNativeMouse(e.xbutton.button);
 			if (btn) Input_SetPressed(btn);
-			else if (e.xbutton.button == 4) Mouse_ScrollWheel(+1);
-			else if (e.xbutton.button == 5) Mouse_ScrollWheel(-1);
+			else if (e.xbutton.button == 4) Mouse_ScrollVWheel( +1);
+			else if (e.xbutton.button == 5) Mouse_ScrollVWheel( -1);
+			else if (e.xbutton.button == 6) Mouse_ScrollHWheel(+1);
+			else if (e.xbutton.button == 7) Mouse_ScrollHWheel(-1);
 			break;
 
 		case ButtonRelease:
@@ -616,15 +701,15 @@ void Window_ProcessEvents(void) {
 			/* Don't lose focus when another app grabs key or mouse */
 			if (e.xfocus.mode == NotifyGrab || e.xfocus.mode == NotifyUngrab) break;
 
-			WindowInfo.Focused = e.type == FocusIn;
+			Window_Main.Focused = e.type == FocusIn;
 			Event_RaiseVoid(&WindowEvents.FocusChanged);
 			/* TODO: Keep track of keyboard when focus is lost */
-			if (!WindowInfo.Focused) Input_Clear();
+			if (!Window_Main.Focused) Input_Clear();
 			break;
 
 		case MappingNotify:
 			if (e.xmapping.request == MappingModifier || e.xmapping.request == MappingKeyboard) {
-				Platform_LogConst("keybard mapping refreshed");
+				Platform_LogConst("keyboard mapping refreshed");
 				XRefreshKeyboardMapping(&e.xmapping);
 			}
 			break;
@@ -642,9 +727,9 @@ void Window_ProcessEvents(void) {
 				unsigned long items, after;
 				cc_uint8* data = NULL;
 
-				XGetWindowProperty(win_display, win_handle, xa_data_sel, 0, 1024, false, 0,
+				XGetWindowProperty(win_display, win, xa_data_sel, 0, 1024, false, 0,
 					&prop_type, &prop_format, &items, &after, &data);
-				XDeleteProperty(win_display, win_handle, xa_data_sel);
+				XDeleteProperty(win_display, win, xa_data_sel);
 
 				if (data && items && prop_type == xa_utf8_string) {
 					clipboard_paste_received    = true;
@@ -687,6 +772,12 @@ void Window_ProcessEvents(void) {
 	}
 }
 
+void Gamepads_Init(void) {
+
+}
+
+void Gamepads_Process(float delta) { }
+
 static void Cursor_GetRawPos(int* x, int* y) {
 	Window rootW, childW;
 	int childX, childY;
@@ -695,23 +786,25 @@ static void Cursor_GetRawPos(int* x, int* y) {
 }
 
 void Cursor_SetPosition(int x, int y) {
-	XWarpPointer(win_display, None, win_handle, 0, 0, 0, 0, x, y);
+	Window win = Window_Main.Handle.val;
+	XWarpPointer(win_display, None, win, 0, 0, 0, 0, x, y);
 	XFlush(win_display); /* TODO: not sure if XFlush call is necessary */
 }
 
 static Cursor blankCursor;
 static void Cursor_DoSetVisible(cc_bool visible) {
+	Window win = Window_Main.Handle.val;
 	if (visible) {
-		XUndefineCursor(win_display, win_handle);
+		XUndefineCursor(win_display, win);
 	} else {
 		if (!blankCursor) {
 			char data  = 0;
 			XColor col = { 0 };
-			Pixmap pixmap = XCreateBitmapFromData(win_display, win_handle, &data, 1, 1);
+			Pixmap pixmap = XCreateBitmapFromData(win_display, win, &data, 1, 1);
 			blankCursor   = XCreatePixmapCursor(win_display, pixmap, pixmap, &col, &col, 0, 0);
 			XFreePixmap(win_display, pixmap);
 		}
-		XDefineCursor(win_display, win_handle, blankCursor);
+		XDefineCursor(win_display, win, blankCursor);
 	}
 }
 
@@ -851,6 +944,7 @@ static Bool X11_FilterEvent(Display* d, XEvent* e, XPointer w) { return e->xany.
 static void X11_MessageBox(const char* title, const char* text, struct X11MessageBox* m) {
 	struct X11Button ok    = { 0 };
 	struct X11Textbox body = { 0 };
+	Window win = Window_Main.Handle.val;
 
 	Atom protocols[2];
 	XFontStruct* font;
@@ -893,7 +987,7 @@ static void X11_MessageBox(const char* title, const char* text, struct X11Messag
 	/* This marks the window as popup window of the main window */
 	/* http://tronche.com/gui/x/icccm/sec-4.html#WM_TRANSIENT_FOR */
 	/* Depending on WM, removes minimise and doesn't show in taskbar */
-	if (win_handle) XSetTransientForHint(m->dpy, m->win, win_handle);
+	if (win) XSetTransientForHint(m->dpy, m->win, win);
 
 	XFreeFontInfo(NULL, font, 1);
 	XUnmapWindow(m->dpy, m->win); /* Make window non resizeable */
@@ -1048,27 +1142,29 @@ cc_result Window_SaveFileDialog(const struct SaveFileDialogArgs* args) {
 
 static GC fb_gc;
 static XImage* fb_image;
-static struct Bitmap fb_bmp;
 static void* fb_data;
 static int fb_fast;
 
-void Window_AllocFramebuffer(struct Bitmap* bmp) {
-	if (!fb_gc) fb_gc = XCreateGC(win_display, win_handle, 0, NULL);
-	bmp->scan0 = (BitmapCol*)Mem_Alloc(bmp->width * bmp->height, 4, "window pixels");
+void Window_AllocFramebuffer(struct Bitmap* bmp, int width, int height) {
+	Window win = Window_Main.Handle.val;
+	if (!fb_gc) fb_gc = XCreateGC(win_display, win, 0, NULL);
+
+	bmp->scan0  = (BitmapCol*)Mem_Alloc(width * height, BITMAPCOLOR_SIZE, "window pixels");
+	bmp->width  = width;
+	bmp->height = height;
 
 	/* X11 requires that the image to draw has same depth as window */
 	/* Easy for 24/32 bit case, but much trickier with other depths */
 	/*  (have to do a manual and slow second blit for other depths) */
 	fb_fast = win_visual.depth == 24 || win_visual.depth == 32;
-	fb_data = fb_fast ? bmp->scan0 : Mem_Alloc(bmp->width * bmp->height, 4, "window blit");
+	fb_data = fb_fast ? bmp->scan0 : Mem_Alloc(width * height, BITMAPCOLOR_SIZE, "window blit");
 
-	fb_bmp   = *bmp;
 	fb_image = XCreateImage(win_display, win_visual.visual,
-		win_visual.depth, ZPixmap, 0, fb_data,
-		bmp->width, bmp->height, 32, 0);
+		win_visual.depth, ZPixmap, 0, (char*)fb_data,
+		width, height, 32, 0);
 }
 
-static void BlitFramebuffer(int x1, int y1, int width, int height) {
+static void BlitFramebuffer(int x1, int y1, int width, int height, struct Bitmap* bmp) {
 	unsigned char* dst;
 	BitmapCol* row;
 	BitmapCol src;
@@ -1077,7 +1173,7 @@ static void BlitFramebuffer(int x1, int y1, int width, int height) {
 	int x, y;
 
 	for (y = y1; y < y1 + height; y++) {
-		row = Bitmap_GetRow(&fb_bmp, y);
+		row = Bitmap_GetRow(bmp, y);
 		dst = ((unsigned char*)fb_image->data) + y * fb_image->bytes_per_line;
 
 		for (x = x1; x < x1 + width; x++) {
@@ -1110,12 +1206,13 @@ static void BlitFramebuffer(int x1, int y1, int width, int height) {
 	}
 }
 
-void Window_DrawFramebuffer(Rect2D r) {
+void Window_DrawFramebuffer(Rect2D r, struct Bitmap* bmp) {
+	Window win = Window_Main.Handle.val;
 	/* Convert 32 bit depth to window depth when required */
-	if (!fb_fast) BlitFramebuffer(r.X, r.Y, r.Width, r.Height);
+	if (!fb_fast) BlitFramebuffer(r.x, r.y, r.width, r.height, bmp);
 
-	XPutImage(win_display, win_handle, fb_gc, fb_image,
-		r.X, r.Y, r.X, r.Y, r.Width, r.Height);
+	XPutImage(win_display, win, fb_gc, fb_image,
+		r.x, r.y, r.x, r.y, r.width, r.height);
 }
 
 void Window_FreeFramebuffer(struct Bitmap* bmp) {
@@ -1124,9 +1221,9 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	if (bmp->scan0 != fb_data) Mem_Free(fb_data);
 }
 
-void Window_OpenKeyboard(struct OpenKeyboardArgs* args) { }
-void Window_SetKeyboardText(const cc_string* text) { }
-void Window_CloseKeyboard(void) { }
+void OnscreenKeyboard_Open(struct OpenKeyboardArgs* args) { }
+void OnscreenKeyboard_SetText(const cc_string* text) { }
+void OnscreenKeyboard_Close(void) { }
 
 static cc_bool rawMouseInited, rawMouseSupported;
 static int xiOpcode;
@@ -1161,7 +1258,7 @@ static void HandleGenericEvent(XEvent* e) {
 	if (!rawMouseSupported || e->xcookie.extension != xiOpcode) return;
 	if (!XGetEventData(win_display, &e->xcookie)) return;
 
-	if (e->xcookie.evtype == XI_RawMotion && Input_RawMode) {
+	if (e->xcookie.evtype == XI_RawMotion && Input.RawMode) {
 		ev     = (XIRawEvent*)e->xcookie.data;
 		values = ev->raw_values;
 
@@ -1219,13 +1316,14 @@ static void InitRawMouse(void) { }
 #endif
 
 void Window_EnableRawMouse(void) {
+	Window win = Window_Main.Handle.val;
 	DefaultEnableRawMouse();
 	if (!rawMouseInited) InitRawMouse();
 	rawMouseInited = true;
 
 	if (!grabCursor) return;
-	XGrabPointer(win_display, win_handle, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-		GrabModeAsync, GrabModeAsync, win_handle, blankCursor, CurrentTime);
+	XGrabPointer(win_display, win, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+		GrabModeAsync, GrabModeAsync, win, blankCursor, CurrentTime);
 }
 
 void Window_UpdateRawMouse(void) {
@@ -1247,8 +1345,10 @@ void Window_DisableRawMouse(void) {
 /*########################################################################################################################*
 *-------------------------------------------------------glX OpenGL--------------------------------------------------------*
 *#########################################################################################################################*/
-#if defined CC_BUILD_GL && !defined CC_BUILD_EGL
-#include <GL/glx.h>
+#if CC_GFX_BACKEND_IS_GL() && !defined CC_BUILD_EGL
+/* #include <GL/glx.h> */
+#include "../misc/x11/min-glx.h"
+
 static GLXContext ctx_handle;
 typedef int  (*FP_SWAPINTERVAL)(int interval);
 typedef Bool (*FP_QUERYRENDERER)(int attribute, unsigned int* value);
@@ -1259,6 +1359,7 @@ void GLContext_Create(void) {
 	static const cc_string vsync_mesa = String_FromConst("GLX_MESA_swap_control");
 	static const cc_string vsync_sgi  = String_FromConst("GLX_SGI_swap_control");
 	static const cc_string info_mesa  = String_FromConst("GLX_MESA_query_renderer");
+	Window win = Window_Main.Handle.val;
 
 	const char* raw_exts;
 	cc_string exts;
@@ -1273,7 +1374,7 @@ void GLContext_Create(void) {
 	if (!glXIsDirect(win_display, ctx_handle)) {
 		Platform_LogConst("== WARNING: Context is not direct ==");
 	}
-	if (!glXMakeCurrent(win_display, win_handle, ctx_handle)) {
+	if (!glXMakeCurrent(win_display, win, ctx_handle)) {
 		Logger_Abort("Failed to make OpenGL context current.");
 	}
 
@@ -1303,15 +1404,16 @@ void GLContext_Free(void) {
 }
 
 void* GLContext_GetAddress(const char* function) {
-	return (void*)glXGetProcAddress((const GLubyte*)function);
+	return (void*)glXGetProcAddress(function);
 }
 
 cc_bool GLContext_SwapBuffers(void) {
-	glXSwapBuffers(win_display, win_handle);
+	Window win = Window_Main.Handle.val;
+	glXSwapBuffers(win_display, win);
 	return true;
 }
 
-void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
+void GLContext_SetVSync(cc_bool vsync) {
 	int res = 0;
 	if (swapIntervalMESA) {
 		res = swapIntervalMESA(vsync);

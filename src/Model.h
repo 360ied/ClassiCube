@@ -4,9 +4,11 @@
 #include "PackedCol.h"
 #include "Constants.h"
 #include "Physics.h"
+CC_BEGIN_HEADER
+
 /* Contains various structs and methods for an entity model.
    Also contains a list of models and default textures for those models.
-   Copyright 2014-2022 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 struct Entity;
 struct AABB;
@@ -19,10 +21,10 @@ extern struct IGameComponent Models_Component;
 enum RotateOrder { ROTATE_ORDER_ZYX, ROTATE_ORDER_XZY, ROTATE_ORDER_YZX, ROTATE_ORDER_XYZ };
 
 /* Describes a vertex within a model. */
-struct ModelVertex { float X, Y, Z; cc_uint16 U, V; };
+struct ModelVertex { float x, y, z; cc_uint16 u, v; };
 static CC_INLINE void ModelVertex_Init(struct ModelVertex* vertex, float x, float y, float z, int u, int v) {
-	vertex->X = x; vertex->Y = y; vertex->Z = z;
-	vertex->U = u; vertex->V = v;
+	vertex->x = x; vertex->y = y; vertex->z = z;
+	vertex->u = u; vertex->v = v;
 }
 
 /* Describes the starting index of this part within a model's array of vertices,
@@ -37,6 +39,9 @@ struct ModelTex;
 /* Contains information about a texture used for models. */
 struct ModelTex { const char* name; cc_uint8 skinType; GfxResourceID texID; struct ModelTex* next; };
 
+#define MODEL_FLAG_INITED    0x01
+#define MODEL_FLAG_CLEAR_HAT 0x02
+
 struct Model;
 /* Contains a set of quads and/or boxes that describe a 3D object as well as
 the bounding boxes that contain the entire set of quads and/or boxes. */
@@ -44,7 +49,7 @@ struct Model {
 	/* Name of this model */
 	const char* name;
 	/* Pointer to the raw vertices of the model */
-	struct ModelVertex* vertices;	
+	struct ModelVertex* vertices;
 	/* Pointer to default texture for this model */
 	struct ModelTex* defaultTex;
 
@@ -67,7 +72,7 @@ struct Model {
 	int index;
 	cc_uint8 armX, armY; /* these translate arm model part back to (0, 0) */
 
-	cc_bool inited;
+	cc_uint8 flags;
 	/* Whether the model should be slightly bobbed up and down when rendering. */
 	/* e.g. for HumanoidModel, when legs are at the peak of their swing, whole model is moved slightly down */
 	cc_bool bobbing;
@@ -80,7 +85,8 @@ struct Model {
 	void (*GetTransform)(struct Entity* entity, Vec3 pos, struct Matrix* m);
 	void (*DrawArm)(struct Entity* entity);
 
-	float maxScale, shadowScale, nameScale;
+	float maxScale, shadowScale;
+	int maxVertices;
 	struct Model* next;
 };
 
@@ -108,13 +114,16 @@ CC_VAR extern struct _ModelsData {
 	/* Maximum number of vertices that can be stored in Vertices. */
 	/* NOTE: If you change this, you MUST also destroy and recreate the dynamic VB. */
 	int MaxVertices;
-	/* Pointer to humanoid/human model.*/
+	/* Pointer to humanoid/human model */
 	struct Model* Human;
+	/* Pointer to block model */
+	struct Model* Block;
 } Models;
 
 /* Initialises fields of a model to default. */
 CC_API void Model_Init(struct Model* model);
 
+void Model_GetEntityTransform(struct Model* model, struct Entity* e, struct Matrix* transform);
 /* Whether the bounding sphere of the model is currently visible. */
 cc_bool Model_ShouldRender(struct Entity* entity);
 /* Approximately how far the given entity is away from the player. */
@@ -124,11 +133,15 @@ CC_API void Model_Render(struct Model* model, struct Entity* entity);
 /* Sets up state to be suitable for rendering the given model. */
 /* NOTE: Model_Render already calls this, you don't normally need to call this. */
 CC_API void Model_SetupState(struct Model* model, struct Entity* entity);
-/* Flushes buffered vertices to the GPU. */
-CC_API void Model_UpdateVB(void);
 /* Applies the skin texture of the given entity to the model. */
 /* Uses model's default texture if the entity doesn't have a custom skin. */
 CC_API void Model_ApplyTexture(struct Entity* entity);
+
+/* Flushes buffered vertices to the GPU. */
+CC_API void Model_UpdateVB(void);
+void Model_LockVB(struct Entity* entity, int verticesCount);
+void Model_UnlockVB(void);
+
 /* Draws the given part with no part-specific rotation (e.g. torso). */
 CC_API void Model_DrawPart(struct ModelPart* part);
 /* Draws the given part with rotation around part's rotation origin. (e.g. arms, head) */
@@ -242,8 +255,6 @@ enum CustomModelAnimAxis {
 };
 
 struct CustomModelAnim {
-	cc_uint8 type;
-	cc_uint8 axis;
 	float a, b, c, d;
 };
 
@@ -259,6 +270,8 @@ struct CustomModelPart {
 	struct ModelPart modelPart;
 	Vec3 rotation; /* rotation angles */
 	struct CustomModelAnim anims[MAX_CUSTOM_MODEL_ANIMS];
+	cc_uint8 animType[MAX_CUSTOM_MODEL_ANIMS];
+	cc_uint8 animAxis[MAX_CUSTOM_MODEL_ANIMS];
 	cc_bool fullbright;
 	cc_bool firstPersonArm;
 };
@@ -267,6 +280,7 @@ struct CustomModel {
 	struct Model model;
 	char name[STRING_SIZE + 1];
 	cc_bool registered, defined;
+	cc_uint8 curPartIndex;
 
 	float nameY;
 	float eyeY;
@@ -277,14 +291,14 @@ struct CustomModel {
 	cc_uint16 vScale;
 
 	cc_uint8 numParts;
-	cc_uint8 curPartIndex;
+	cc_uint8 numArmParts;
 	struct CustomModelPart parts[MAX_CUSTOM_MODEL_PARTS];
 };
 
-extern struct CustomModel custom_models[MAX_CUSTOM_MODELS];
-
+struct CustomModel* CustomModel_Get(int id);
 void CustomModel_BuildPart(struct CustomModel* cm, struct CustomModelPartDef* part);
 void CustomModel_Register(struct CustomModel* cm);
 void CustomModel_Undefine(struct CustomModel* cm);
 
+CC_END_HEADER
 #endif

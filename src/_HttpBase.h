@@ -20,6 +20,7 @@ void HttpRequest_Free(struct HttpRequest* request) {
 	request->size  = 0;
 	request->error = NULL;
 }
+#define HttpRequest_Copy(dst, src) Mem_Copy(dst, src, sizeof(struct HttpRequest))
 
 /*########################################################################################################################*
 *----------------------------------------------------Http requests list---------------------------------------------------*
@@ -45,8 +46,9 @@ static void RequestList_Append(struct RequestList* list, struct HttpRequest* ite
 
 	if (flags & HTTP_FLAG_PRIORITY) {
 		/* Shift all requests right one place */
-		for (i = list->count; i > 0; i--) {
-			list->entries[i] = list->entries[i - 1];
+		for (i = list->count; i > 0; i--) 
+		{
+			HttpRequest_Copy(&list->entries[i], &list->entries[i - 1]);
 		}
 		/* Insert new request at front/start */
 		i = 0;
@@ -55,7 +57,7 @@ static void RequestList_Append(struct RequestList* list, struct HttpRequest* ite
 		i = list->count;
 	}
 
-	list->entries[i] = *item;
+	HttpRequest_Copy(&list->entries[i], item);
 	list->count++;
 }
 
@@ -63,8 +65,9 @@ static void RequestList_Append(struct RequestList* list, struct HttpRequest* ite
 static void RequestList_RemoveAt(struct RequestList* list, int i) {
 	if (i < 0 || i >= list->count) Logger_Abort("Tried to remove element at list end");
 
-	for (; i < list->count - 1; i++) {
-		list->entries[i] = list->entries[i + 1];
+	for (; i < list->count - 1; i++) 
+	{
+		HttpRequest_Copy(&list->entries[i], &list->entries[i + 1]);
 	}
 	list->count--;
 }
@@ -153,9 +156,11 @@ static int Http_Add(const cc_string* url, cc_uint8 flags, cc_uint8 type, const c
 	return req.id;
 }
 
-static const cc_string urlRewrites[4] = {
+static const cc_string urlRewrites[] = {
 	String_FromConst("http://dl.dropbox.com/"),  String_FromConst("https://dl.dropboxusercontent.com/"),
-	String_FromConst("https://dl.dropbox.com/"), String_FromConst("https://dl.dropboxusercontent.com/")
+	String_FromConst("https://dl.dropbox.com/"), String_FromConst("https://dl.dropboxusercontent.com/"),
+	String_FromConst("https://www.imgur.com/"),  String_FromConst("https://i.imgur.com/"),
+	String_FromConst("https://imgur.com/"),      String_FromConst("https://i.imgur.com/"),
 };
 /* Converts say dl.dropbox.com/xyZ into dl.dropboxusercontent.com/xyz */
 static void Http_GetUrl(struct HttpRequest* req, cc_string* dst) {
@@ -179,7 +184,7 @@ static void Http_FinishRequest(struct HttpRequest* req) {
 	req->success = !req->result && req->statusCode == 200 && req->data && req->size;
 
 	if (!req->success) {
-		const char* error = req->error; req->error = NULL;
+		char* error = req->error; req->error = NULL;
 		HttpRequest_Free(req);
 		req->error = error;
 		/* TODO don't HttpRequest_Free here? */
@@ -187,7 +192,7 @@ static void Http_FinishRequest(struct HttpRequest* req) {
 
 	Mutex_Lock(processedMutex);
 	{
-		req->timeDownloaded = DateTime_CurrentUTC_MS();
+		req->timeDownloaded = Stopwatch_Measure();
 		RequestList_Append(&processedReqs, req, false);
 	}
 	Mutex_Unlock(processedMutex);
@@ -200,11 +205,13 @@ static void Http_CleanCacheTask(struct ScheduledTask* task) {
 
 	Mutex_Lock(processedMutex);
 	{
-		TimeMS now = DateTime_CurrentUTC_MS();
-		for (i = processedReqs.count - 1; i >= 0; i--) {
+		cc_uint64 now = Stopwatch_Measure();
+		for (i = processedReqs.count - 1; i >= 0; i--) 
+		{
 			item = &processedReqs.entries[i];
-			if (item->timeDownloaded + (10 * 1000) >= now) continue;
+			if (Stopwatch_ElapsedMS(item->timeDownloaded, now) < 10 * 1000) continue;
 
+			Platform_Log1("Cleaning up forgotten download for %c", item->url);
 			HttpRequest_Free(item);
 			RequestList_RemoveAt(&processedReqs, i);
 		}
@@ -289,7 +296,11 @@ void Http_LogError(const char* action, const struct HttpRequest* item) {
 *-----------------------------------------------------Http component------------------------------------------------------*
 *#########################################################################################################################*/
 static void Http_InitCommon(void) {
+#if defined CC_BUILD_NDS
+	httpOnly    = Options_GetBool(OPT_HTTP_ONLY, true);
+#else
 	httpOnly    = Options_GetBool(OPT_HTTP_ONLY, false);
+#endif
 	httpsVerify = Options_GetBool(OPT_HTTPS_VERIFY, true);
 
 	Options_Get(OPT_SKIN_SERVER, &skinServer, SKINS_SERVER);
