@@ -88,8 +88,8 @@
             '';
 
             buildInputs = [
-              libX11
-              libXi
+              xorg.libX11
+              xorg.libXi
               libGL
               curl
               openal
