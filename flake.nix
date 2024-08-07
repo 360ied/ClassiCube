@@ -8,7 +8,11 @@
   };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      cef,
+    }:
     let
       # System types to support.
       supportedSystems = [
