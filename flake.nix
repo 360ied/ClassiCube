@@ -32,8 +32,6 @@
         }
       );
 
-      cefPath = cef.packages.${system}.default;
-
     in
     {
 
@@ -85,6 +83,8 @@
               openal
               liberation_ttf
             ];
+
+            cefPath = cef.packages.${system}.default;
 
             installPhase = ''
               runHook preInstall
