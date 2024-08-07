@@ -105,7 +105,7 @@
               cp misc/CCicon.png "$out/share/icons/hicolor/256x256/apps"
 
               # install CEF plugin
-              cp -a '${cefPath}'/* .
+              cp -a '${cefPath}'/* "$out"
               chmod -cR u+w cef plugins
 
               runHook postInstall
