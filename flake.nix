@@ -2,7 +2,10 @@
   description = "ClassiCube Flake";
 
   # Nixpkgs / NixOS version to use.
-  inputs.nixpkgs.url = "nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "nixpkgs/nixos-unstable";
+    cef.url = "github:SpiralP/classicube-cef-plugin";
+  };
 
   outputs =
     { self, nixpkgs }:
@@ -24,6 +27,8 @@
           overlays = [ self.overlay ];
         }
       );
+
+      cefPath = cef.packages.default;
 
     in
     {
@@ -94,6 +99,10 @@
 
               mkdir -p "$out/share/icons/hicolor/256x256/apps"
               cp misc/CCicon.png "$out/share/icons/hicolor/256x256/apps"
+
+              # install CEF plugin
+              cp -a '${cefPath}'/* .
+              chmod -cR u+w cef plugins
 
               runHook postInstall
             '';
