@@ -1,6 +1,40 @@
 {
   "nodes": {
+    "cef": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1722993305,
+        "narHash": "sha256-K924zinTlQ4zVA+9XjHWhK44bN7KWmLM8wKcilN9wJw=",
+        "owner": "SpiralP",
+        "repo": "classicube-cef-plugin",
+        "rev": "ec22df2d83f63b0189b9e3d17c7f75ce7592c919",
+        "type": "github"
+      },
+      "original": {
+        "owner": "SpiralP",
+        "repo": "classicube-cef-plugin",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
+      "locked": {
+        "lastModified": 1722869614,
+        "narHash": "sha256-7ojM1KSk3mzutD7SkrdSflHXEujPvW1u7QuqWoTLXQU=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "883180e6550c1723395a3a342f830bfc5c371f6b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-24.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
       "locked": {
         "lastModified": 1722813957,
         "narHash": "sha256-IAoYyYnED7P8zrBFMnmp7ydaJfwTnwcnqxUElC1I26Y=",
@@ -17,7 +51,8 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "cef": "cef",
+        "nixpkgs": "nixpkgs_2"
       }
     }
   },
