@@ -32,7 +32,7 @@
         }
       );
 
-      cefPath = cef.default;
+      cefPath = cef.packages.${system}.default;
 
     in
     {
