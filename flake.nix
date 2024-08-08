@@ -79,7 +79,7 @@
               # ClassiCube searches for plugins in the current directory.
               # This changes it to the path of cef
               substituteInPlace src/Game.c \
-                --replace-fail '%NIXPKGS_PLUGINS_PATH%' "${cefPath}"
+                --replace-fail '%NIXPKGS_PLUGINS_PATH%' "${cefPath}/plugins"
 
               pwd
               echo "${cefPath}"
