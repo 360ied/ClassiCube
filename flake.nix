@@ -4,7 +4,7 @@
   # Nixpkgs / NixOS version to use.
   inputs = {
     nixpkgs.url = "nixpkgs/nixos-unstable";
-    cef.url = "github:SpiralP/classicube-cef-plugin";
+    cef.url = "github:360ied/classicube-cef-plugin/cefdirfix";
   };
 
   outputs =
