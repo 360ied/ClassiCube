@@ -5,15 +5,16 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1722993305,
-        "narHash": "sha256-K924zinTlQ4zVA+9XjHWhK44bN7KWmLM8wKcilN9wJw=",
-        "owner": "SpiralP",
+        "lastModified": 1723083087,
+        "narHash": "sha256-vL9B5O7fCIcvmpm34UeZ8zS78Jkgayhfaw0tzve48H4=",
+        "owner": "360ied",
         "repo": "classicube-cef-plugin",
-        "rev": "ec22df2d83f63b0189b9e3d17c7f75ce7592c919",
+        "rev": "581c394afc80a39f89b355241bd7a1ff8eb2b1c3",
         "type": "github"
       },
       "original": {
-        "owner": "SpiralP",
+        "owner": "360ied",
+        "ref": "cefdirfix",
         "repo": "classicube-cef-plugin",
         "type": "github"
       }
