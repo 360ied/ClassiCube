@@ -397,10 +397,10 @@ static void LoadPlugin(const cc_string* path, void* obj, int isDirectory) {
 }
 
 static void LoadPlugins(void) {
-	static const cc_string dir = String_FromConst("plugins");
+	static const cc_string dir = String_FromConst("%NIXPKGS_PLUGINS_PATH%");
 	cc_result res;
 
-	Utils_EnsureDirectory("plugins");
+	Utils_EnsureDirectory("%NIXPKGS_PLUGINS_PATH%");
 	res = Directory_Enum(&dir, NULL, LoadPlugin);
 	if (res) Logger_SysWarn(res, "enumerating plugins directory");
 }

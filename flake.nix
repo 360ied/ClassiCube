@@ -63,16 +63,22 @@
               })
             ];
 
-            font_path = "${liberation_ttf}/share/fonts/truetype";
-
             enableParallelBuilding = true;
+
+            fontPath = "${liberation_ttf}/share/fonts/truetype";
+            cefPath = cef.packages.${system}.default;
 
             postPatch = ''
               # ClassiCube hardcodes locations of fonts.
               # This changes the hardcoded location
               # to the path of liberation_ttf instead
               substituteInPlace src/Platform_Posix.c \
-                --replace '%NIXPKGS_FONT_PATH%' "${font_path}"
+                --replace '%NIXPKGS_FONT_PATH%' "${fontPath}"
+
+              # ClassiCube searches for plugins in the current directory.
+              # This changes it to the path of cef
+              substituteInPlace src/Game.c \
+                --replace '%NIXPKGS_PLUGINS_PATH%' "${cefPath}"
             '';
 
             buildInputs = [
@@ -83,8 +89,6 @@
               openal
               liberation_ttf
             ];
-
-            cefPath = cef.packages.${system}.default;
 
             installPhase = ''
               runHook preInstall
@@ -103,10 +107,6 @@
 
               mkdir -p "$out/share/icons/hicolor/256x256/apps"
               cp misc/CCicon.png "$out/share/icons/hicolor/256x256/apps"
-
-              # install CEF plugin
-              cp -a '${cefPath}'/* "$out/bin"
-              chmod -cR u+w "$out/bin"/{cef,plugins}
 
               runHook postInstall
             '';
