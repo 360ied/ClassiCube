@@ -5,11 +5,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1723083087,
-        "narHash": "sha256-vL9B5O7fCIcvmpm34UeZ8zS78Jkgayhfaw0tzve48H4=",
+        "lastModified": 1723083306,
+        "narHash": "sha256-o++MxgUCshcVA52EWstat7w7u8AN1J5pFdJY8JgVzBA=",
         "owner": "360ied",
         "repo": "classicube-cef-plugin",
-        "rev": "581c394afc80a39f89b355241bd7a1ff8eb2b1c3",
+        "rev": "fc1ff66e6937bab87a646c88d32d7ffc99fd4c30",
         "type": "github"
       },
       "original": {
