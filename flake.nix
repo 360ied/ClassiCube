@@ -107,6 +107,7 @@
               # in ~/.local/share instead.
               wrapProgram "$out/bin/ClassiCube" \
                 --run 'mkdir -p "$HOME/.local/share/ClassiCube"' \
+                --set 'GLIBC_TUNABLES' 'glibc.rtld.optional_static_tls=16384'
                 --run 'cd       "$HOME/.local/share/ClassiCube"'
 
               mkdir -p "$out/share/icons/hicolor/256x256/apps"
