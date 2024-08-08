@@ -49,6 +49,7 @@
             nativeBuildInputs = [
               makeWrapper
               copyDesktopItems
+              keepBuildTree
             ];
 
             desktopItems = [
@@ -79,6 +80,9 @@
               # This changes it to the path of cef
               substituteInPlace src/Game.c \
                 --replace-fail '%NIXPKGS_PLUGINS_PATH%' "${cefPath}"
+
+              pwd
+              echo "${cefPath}"
             '';
 
             buildInputs = [
