@@ -73,12 +73,12 @@
               # This changes the hardcoded location
               # to the path of liberation_ttf instead
               substituteInPlace src/Platform_Posix.c \
-                --replace '%NIXPKGS_FONT_PATH%' "${fontPath}"
+                --replace-fail '%NIXPKGS_FONT_PATH%' "${fontPath}"
 
               # ClassiCube searches for plugins in the current directory.
               # This changes it to the path of cef
               substituteInPlace src/Game.c \
-                --replace '%NIXPKGS_PLUGINS_PATH%' "${cefPath}"
+                --replace-fail '%NIXPKGS_PLUGINS_PATH%' "${cefPath}"
             '';
 
             buildInputs = [
